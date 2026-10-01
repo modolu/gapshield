@@ -1,0 +1,2 @@
+# Source-of-truth docs are kept verbatim; their ADR sections use Markdown hard line breaks (two trailing spaces).
+GAPSHIELD_PRODUCT_*.md whitespace=-blank-at-eol
