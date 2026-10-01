@@ -21,7 +21,8 @@ runs = 1000
 [profile.default.invariant]
 runs = 256
 depth = 64
-fail_on_revert = false
+fail_on_revert = true
+show_metrics = true
 
 [profile.ci.fuzz]
 runs = 10000
