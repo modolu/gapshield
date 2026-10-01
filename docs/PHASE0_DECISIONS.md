@@ -1,6 +1,6 @@
 # GapShield — Phase 0 Decisions
 
-Status: **FROZEN for Phase 1** · Verified 2026-10-01 · Deltas P1–P6 approved by owner 2026-10-01 · Scope: decision freeze only (no protocol code)
+Status: **FROZEN for Phase 1** · Verified 2026-10-01 · Deltas P1–P6 approved by owner 2026-10-01 · P7 approved 2026-10-01 for Phase 2 · Scope: decision freeze only (no protocol code)
 
 Source of truth: `GAPSHIELD_PRODUCT_BRIEF.md` (624 lines) and `GAPSHIELD_PRODUCT_ARCHITECTURE.md` (1,351 lines). This document records externally verified facts, decisions made within the architecture's existing scope, and the owner-approved architecture deltas (§9) that govern Phase 1 where the architecture is silent.
 
@@ -208,7 +208,8 @@ Approved by the owner on 2026-10-01. These fill gaps the architecture leaves ope
   - internal `lpAssets` (not `balanceOf`, so donations can't affect it);
   - `reservedLiability`;
   - `protocolFeesAccrued`;
-  - `pendingPremium` (escrow): premium neither allocated by settlement nor refunded. It may include unclaimed refunds from earlier voided epochs, and it is never reset to zero.
+  - `pendingPremium` (escrow): premium neither allocated by settlement nor refunded. It may include unclaimed refunds from earlier voided epochs, and it is never reset to zero;
+  - `claimablePayouts` (P7): settled buyer money awaiting claims.
 - ERC-4626 `totalAssets() = lpAssets`, with an OpenZeppelin virtual-share offset (inflation-attack resistance).
 - **Premium is escrowed and excluded from LP-owned assets until successful settlement.**
   - On success, only that epoch's premium leaves escrow:
@@ -295,10 +296,10 @@ interface IReferenceOracle {
 **Settlement (O(1), no loops):**
 - `gapBps = Fc > Mo ? floor((Fc − Mo) × 10_000 / Fc) : 0`
 - `coveredBps = min(max(gapBps − triggerBps, 0), maxCoverBps)`
-- `owed = floor(soldNotional × coveredBps / 10_000)`
-- `reservedLiability −= soldLiability − owed`
+- `actualOwed = floor(soldNotional × coveredBps / 10_000)`
+- `reservedLiability −= soldLiability`; `lpAssets −= actualOwed`; `claimablePayouts += actualOwed` (P7)
 
-Because every notional is a whole USDG amount (§7), each per-policy payout is exact. Their sum equals `owed`, with no rounding dust.
+Because every notional is a whole USDG amount (§7), each per-policy payout is exact. Their sum equals `actualOwed`, with no rounding dust, so `claimablePayouts` drains to zero.
 
 Required Phase 1 tests for P1/P2/P5 (also in Architecture §16):
 - non-whole-USDG notional rejected;
@@ -311,7 +312,7 @@ Required Phase 1 tests for P1/P2/P5 (also in Architecture §16):
 
 **Pool:**
 - immutables: `usdg`, `receipt`, `utilizationCapBps = 5000`;
-- state: `lpAssets`, `reservedLiability`, `protocolFeesAccrued`, `pendingPremium`, `activeEpochId`, `nextEpochId`, `nextPolicyId`, `settlementOperator`;
+- state: `lpAssets`, `reservedLiability`, `protocolFeesAccrued`, `pendingPremium`, `claimablePayouts` (P7), `activeEpochId`, `nextEpochId`, `nextPolicyId`, `settlementOperator`;
 - OpenZeppelin `Pausable`.
 
 **Asset** (architecture §7): `oracleFeedId`, `symbol`, `priceDecimals`, `enabled`.
@@ -344,6 +345,37 @@ There is no admin void, and no admin path to escrow, reserved liability or LP as
 - OpenZeppelin ERC-721, with `tokenId == policyId` (unique);
 - only the pool can mint;
 - any transfer between nonzero addresses reverts (`_update` override).
+
+### P7 — Settled payouts leave LP-owned assets (`claimablePayouts`)
+
+Approved by the owner on 2026-10-01, before Phase 2. Found while implementing Phase 1.
+
+**Problem.** Under P1–P6 as written, settlement released only `soldLiability − owed` and left `owed` inside `lpAssets` until claimed. Between settlement and claim, ERC-4626 share prices would include money already owed to buyers:
+- an LP depositing after settlement would buy in at an inflated price and absorb part of the claims;
+- an LP exiting early would receive more per share than is fair.
+
+**Decision.** Add a global `uint256 claimablePayouts`: settled buyer money awaiting claims. It is not LP-owned, not protocol fees, not premium escrow, not free collateral, and it never increases selling capacity.
+
+On successful settlement:
+- `actualOwed = (epoch.soldNotional × coveredBps) / 10_000`
+- `reservedLiability −= epoch.soldLiability`
+- `lpAssets −= actualOwed`
+- `claimablePayouts += actualOwed`
+- `pendingPremium −= epoch.premiumCollected`
+- `protocolFee = (epoch.premiumCollected × epoch.protocolFeeBps) / 10_000`; `protocolFeesAccrued += protocolFee`
+- `lpAssets += epoch.premiumCollected − protocolFee`
+
+Each successful policy claim:
+- computes that policy's payout;
+- marks the policy claimed before transfer;
+- `claimablePayouts −= payout` (exactly);
+- transfers the payout to the receipt owner.
+
+A zero-payout settled policy is still finalized once: marked claimed, nothing transferred, `claimablePayouts` unchanged.
+
+Voided-epoch premium refunds use `pendingPremium` only and never `claimablePayouts`.
+
+**Why it is exact.** With whole-USDG notionals (§7), `actualOwed` equals the sum of individual payouts, so `claimablePayouts` drains to exactly zero after all claims. Immediately before successful settlement of the active epoch, `actualOwed ≤ epoch.soldLiability ≤ reservedLiability ≤ lpAssets`, so settlement cannot underflow. This is a precondition of settlement, not an invariant afterwards: settlement intentionally changes `reservedLiability` and `lpAssets`.
 
 ## 10. Source-of-truth updates (applied in commit "docs: freeze phase 0 architecture decisions")
 

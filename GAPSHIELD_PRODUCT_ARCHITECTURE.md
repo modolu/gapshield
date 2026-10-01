@@ -284,6 +284,7 @@ erDiagram
         uint256 totalAssets
         uint256 reservedLiability
         uint256 pendingPremium
+        uint256 claimablePayouts
         uint256 protocolFeesAccrued
         uint16 utilizationCapBps
         bool paused
@@ -352,14 +353,15 @@ erDiagram
 #### Pool
 
 - immutable USDG token;
-- `totalAssets`: LP-owned assets, tracked internally (not `balanceOf`); excludes escrowed premium and protocol fees;
+- `totalAssets`: LP-owned assets, tracked internally (not `balanceOf`); excludes escrowed premium, settled claimable payouts, and protocol fees;
 - `reservedLiability`;
 - `pendingPremium`: escrowed premium not yet allocated by settlement or refunded after void (may include unclaimed refunds of earlier voided epochs); never LP-owned; only decremented per epoch or per policy, never reset;
+- `claimablePayouts`: settled buyer money awaiting claims; not LP-owned, not protocol fees, not premium escrow, not free collateral, and never adds selling capacity;
 - `protocolFeesAccrued`;
 - `utilizationCapBps` default 5000;
 - paused flag.
 
-`freeCollateral = totalAssets - reservedLiability` (escrowed premium and protocol fees are already excluded from `totalAssets`)
+`freeCollateral = totalAssets - reservedLiability` (escrowed premium, settled claimable payouts, and protocol fees are already excluded from `totalAssets`)
 
 #### Epoch
 
@@ -450,16 +452,32 @@ The purchase transaction atomically:
 `ProtectionPool` is the settlement state-machine authority. `settleClose` / `settleOpen` call the epoch's `IReferenceOracle` adapter, re-check the returned reference time against the epoch window, and record each reference exactly once.
 
 Settlement is allowed only while `block.timestamp < settlementDeadline`. On successful settlement (O(1), no loops):
-- `owed = (soldNotional * coveredBps) / 10,000`; `reservedLiability -= soldLiability - owed`. Because every notional is a whole USDG amount, `owed` equals the sum of the individual rounded-down payouts exactly, for any integer `coveredBps` (no dust);
+- the epoch's whole reserve is released and its actual payouts leave LP-owned assets:
+  - `actualOwed = (epoch.soldNotional * coveredBps) / 10,000`;
+  - `reservedLiability -= epoch.soldLiability`;
+  - `totalAssets -= actualOwed`;
+  - `claimablePayouts += actualOwed`.
+
+  Immediately before successful settlement of the active epoch, `actualOwed <= epoch.soldLiability <= reservedLiability <= totalAssets`, so none of these subtractions underflow. This is a precondition of settlement, not an invariant afterwards: settlement intentionally changes `reservedLiability` and `totalAssets`. Because every notional is a whole USDG amount, `actualOwed` equals the sum of the individual rounded-down payouts exactly, for any integer `coveredBps` (no dust), so `claimablePayouts` drains to zero once every policy has claimed;
 - escrowed premium of this epoch only is allocated:
   - `pendingPremium -= epoch.premiumCollected`;
   - `protocolFee = (epoch.premiumCollected * protocolFeeBps) / 10,000`; `protocolFeesAccrued += protocolFee`;
   - `totalAssets += epoch.premiumCollected - protocolFee` (88% to LP economics).
 
+Each claim on a `Settled` epoch:
+- computes that policy's payout;
+- marks the policy claimed before any transfer;
+- `claimablePayouts -= payout`;
+- transfers the payout to the receipt owner.
+
+A zero-payout settled policy is still finalized exactly once: it is marked claimed, nothing is transferred, and `claimablePayouts` is unchanged.
+
 If the epoch is not `Settled`, `voidEpoch(epochId)` is permissionless and deterministic, allowed only when `block.timestamp >= settlementDeadline`. There is no admin or early void. Void releases the epoch's `soldLiability` from `reservedLiability`; its premium stays in `pendingPremium`. Each refund of a voided policy:
 - marks the policy claimed (once);
 - `pendingPremium -= policy.premiumUSDG`;
 - transfers that premium to the policy owner.
+
+Voided-epoch refunds use `pendingPremium` only and never touch `claimablePayouts`.
 
 `pendingPremium` is never set to zero globally: earlier voided epochs may still have unclaimed refunds, and a later settlement may allocate only its own `premiumCollected`.
 
@@ -712,7 +730,7 @@ sequenceDiagram
     UI-->>Buyer: Friday $100 → Monday $91 → $40
     Buyer->>Pool: claim(policyId)
     Pool->>Receipt: Verify owner
-    Pool->>Pool: Mark claimed; release liability
+    Pool->>Pool: Mark claimed; claimablePayouts -= payout
     Pool->>USDG: transfer 40 USDG
     Pool-->>UI: ProtectionClaimed
 ```
@@ -832,6 +850,7 @@ Post-mainnet:
 | Precision loss | Integer math, explicit decimals, round payout down |
 | Fee accounting bug | Separate protocol fee from LP assets |
 | Premium captured by LP exiting before risk ends | Premium escrowed until successful settlement |
+| LP shares mispriced by settled but unclaimed payouts | Settlement moves `actualOwed` out of `totalAssets` into `claimablePayouts` |
 | Oracle never settles | `settlementDeadline` + permissionless void and premium refund |
 | Epoch config mutation | Freeze economic config once sales open |
 | Admin abuse | Testnet only; narrow roles; post-mainnet multisig/timelock |
@@ -1093,7 +1112,12 @@ Epoch:
 - aggregate settled liability (`owed`) equals the sum of individual payouts across multiple policies;
 - successful settlement decreases `pendingPremium` by exactly that epoch's `premiumCollected`;
 - each void refund decrements `pendingPremium` once per policy;
-- refundable premium of an earlier voided epoch cannot be allocated by settlement of a later epoch.
+- refundable premium of an earlier voided epoch cannot be allocated by settlement of a later epoch;
+- settlement moves exactly `actualOwed` from `totalAssets` to `claimablePayouts` and releases the epoch's whole `soldLiability`;
+- `claimablePayouts` drains to exactly zero after every policy of a settled epoch claims;
+- a zero-payout settled policy finalizes once, transfers nothing, and leaves `claimablePayouts` unchanged;
+- void refunds never change `claimablePayouts`;
+- settled unclaimed payouts never add selling capacity or LP share value.
 
 Vault:
 - deposit/share conversion;
@@ -1128,6 +1152,8 @@ Properties:
 7. Claims cannot exceed policy max payout.
 8. Escrowed premium is never LP-owned or fee before successful settlement.
 9. `pendingPremium` equals the sum of premiums neither allocated by settlement nor refunded.
+10. `claimablePayouts` equals the sum of payouts of settled, unclaimed policies.
+11. USDG balance ≥ `totalAssets + pendingPremium + claimablePayouts + protocolFeesAccrued`.
 
 ### Integration tests
 
