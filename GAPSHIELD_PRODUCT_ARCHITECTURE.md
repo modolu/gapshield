@@ -180,8 +180,9 @@ flowchart TB
 - stateless adapter called by `ProtectionPool`; validates vendor-specific evidence for a specific feed and allowed time window and returns normalized reference data (price, reference time, evidence hash);
 - checks feed ID, the reference's own update time within the window, the required epoch market session where the oracle exposes session metadata, and positivity; reverts on any failure;
 - never writes pool state; the pool enforces one-time recording;
+- defense in depth: in addition to the configured reference-window checks, `ProtectionPool` rejects any reference whose reference timestamp is greater than `block.timestamp`;
 - production candidate: Pyth adapter. Pyth note: require per-feed `feedUpdateTimestamp` within the window and `marketSession == regular`; never rely only on the payload timestamp, because Pyth Pro carries forward the most recent equity price when no fresh aggregate is produced (`https://docs.pyth.network/price-feeds/pro/payload-reference`). Pyth charges a verification fee, so settlement calls are `payable` and forward `msg.value`;
-- testnet fallback: explicit `SnapshotOracle`.
+- testnet fallback: explicit `SnapshotOracle`, which exposes `ORACLE_KIND()` and identifies itself on-chain as `"TESTNET DEMO ORACLE"`.
 
 **Premium library**
 - v1 reads fixed premium basis points from epoch configuration;
@@ -449,7 +450,7 @@ The purchase transaction atomically:
 
 ### Settlement, premium allocation, and void
 
-`ProtectionPool` is the settlement state-machine authority. `settleClose` / `settleOpen` call the epoch's `IReferenceOracle` adapter, re-check the returned reference time against the epoch window, and record each reference exactly once.
+`ProtectionPool` is the settlement state-machine authority. `settleClose` / `settleOpen` call the epoch's `IReferenceOracle` adapter, re-check the returned reference time against the epoch window, reject a reference time greater than `block.timestamp` (defense in depth), and record each reference exactly once.
 
 Settlement is allowed only while `block.timestamp < settlementDeadline`. On successful settlement (O(1), no loops):
 - the epoch's whole reserve is released and its actual payouts leave LP-owned assets:
@@ -969,6 +970,8 @@ Emit:
 - `ProtectionClaimed`
 - `EpochVoided`
 - `PremiumRefunded`
+- `ProtocolFeesWithdrawn`
+- `SnapshotPosted` (emitted by `SnapshotOracle`)
 - `Paused`
 - `Unpaused`
 
