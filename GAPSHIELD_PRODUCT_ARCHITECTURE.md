@@ -102,7 +102,7 @@ This proves deployment, not that the exact equity feed and access plan required 
 
 **ZeroDev**
 
-Preferred passkey/smart-account/gas-sponsorship layer. It is not a critical dependency until hosted bundler/paymaster support for Robinhood Chain Testnet is verified. Standard EOA/injected-wallet flow remains the launch fallback.
+Preferred passkey/smart-account/gas-sponsorship layer. ZeroDev's supported-networks list includes Robinhood Testnet (`46630`) and Robinhood (`4663`) (verified 2026-10-01, `https://docs.zerodev.app/sdk/faqs/chains`). Hosted bundler/paymaster/sponsorship for this project is not yet smoke-tested, so ZeroDev is not a critical dependency. Standard EOA/injected-wallet flow remains the launch fallback.
 
 **Vercel**
 
@@ -160,11 +160,12 @@ flowchart TB
 - tracks `reservedLiability`;
 - enforces `freeCollateral`;
 - creates and opens weekly epochs;
-- accepts premium;
+- accepts premium into escrow (not LP-owned until successful settlement);
 - reserves maximum payout;
 - blocks post-cutoff purchases;
+- is the settlement state-machine authority: calls the epoch's oracle adapter, records each reference once, finalizes or voids the epoch;
 - computes claimable payout from settled epoch data;
-- pays claims;
+- pays claims and, for voided epochs, premium refunds;
 - limits LP withdrawal to unreserved collateral;
 - exposes solvency/utilization views.
 
@@ -176,9 +177,10 @@ flowchart TB
 - metadata derives from pool policy data.
 
 **IReferenceOracle**
-- validates/records the reference for a specific feed and allowed time window;
-- checks feed ID, publish time, positivity, and one-time settlement;
-- production candidate: Pyth adapter;
+- stateless adapter called by `ProtectionPool`; validates vendor-specific evidence for a specific feed and allowed time window and returns normalized reference data (price, reference time, evidence hash);
+- checks feed ID, the reference's own update time within the window, the required epoch market session where the oracle exposes session metadata, and positivity; reverts on any failure;
+- never writes pool state; the pool enforces one-time recording;
+- production candidate: Pyth adapter. Pyth note: require per-feed `feedUpdateTimestamp` within the window and `marketSession == regular`; never rely only on the payload timestamp, because Pyth Pro carries forward the most recent equity price when no fresh aggregate is produced (`https://docs.pyth.network/price-feeds/pro/payload-reference`). Pyth charges a verification fee, so settlement calls are `payable` and forward `msg.value`;
 - testnet fallback: explicit `SnapshotOracle`.
 
 **Premium library**
@@ -281,6 +283,7 @@ erDiagram
         address assetUSDG
         uint256 totalAssets
         uint256 reservedLiability
+        uint256 pendingPremium
         uint256 protocolFeesAccrued
         uint16 utilizationCapBps
         bool paused
@@ -297,16 +300,23 @@ erDiagram
     EPOCH {
         uint256 epochId
         bytes32 assetId
+        address oracle
         uint64 saleCutoff
         uint64 closeWindowStart
         uint64 closeWindowEnd
         uint64 openWindowStart
         uint64 openWindowEnd
+        uint64 settlementDeadline
         uint16 triggerBps
         uint16 maxCoverBps
         uint16 premiumBps
+        uint16 protocolFeeBps
+        uint256 minNotional
+        uint256 maxNotional
         uint256 maxAggregateLiability
+        uint256 soldNotional
         uint256 soldLiability
+        uint256 premiumCollected
         uint256 fridayPrice
         uint256 mondayPrice
         uint8 status
@@ -342,25 +352,33 @@ erDiagram
 #### Pool
 
 - immutable USDG token;
+- `totalAssets`: LP-owned assets, tracked internally (not `balanceOf`); excludes escrowed premium and protocol fees;
 - `reservedLiability`;
+- `pendingPremium`: escrowed premium not yet allocated by settlement or refunded after void (may include unclaimed refunds of earlier voided epochs); never LP-owned; only decremented per epoch or per policy, never reset;
 - `protocolFeesAccrued`;
 - `utilizationCapBps` default 5000;
 - paused flag.
 
-`freeCollateral = totalAssets - reservedLiability - protocolFeesAccrued`
+`freeCollateral = totalAssets - reservedLiability` (escrowed premium and protocol fees are already excluded from `totalAssets`)
 
 #### Epoch
 
 One explicit weekend:
 - asset/feed;
+- oracle adapter address (frozen per epoch);
 - sale cutoff;
 - reference windows;
+- `settlementDeadline` (> open window end);
 - trigger;
 - cap;
 - premium;
+- `protocolFeeBps` (1200 = 12% of premium);
+- `minNotional` / `maxNotional` per policy (whole USDG amounts);
 - max aggregate liability;
-- sold liability;
-- settlement prices/status.
+- `soldNotional`, `soldLiability`, `premiumCollected`;
+- settlement prices/status (`None`, `Open`, `CloseRecorded`, `Settled`, `Voided`).
+
+All epoch configuration is immutable after creation.
 
 Explicit timestamps are intentional: they avoid building a full NYSE holiday/DST calendar into the 70-hour MVP.
 
@@ -404,7 +422,7 @@ Example:
 - notional 1,000 USDG;
 - payout 40 USDG.
 
-All division rounds down.
+All payout-side division rounds down (gap, covered gap, max payout, payout, protocol fee). Premium rounds up: `premium = ceil(N * premiumBps / 10,000)`.
 
 ### Maximum liability
 
@@ -416,16 +434,34 @@ Purchase succeeds only if:
 1. epoch sale is open;
 2. `block.timestamp < saleCutoff`;
 3. contract not paused;
-4. notional valid;
+4. `minNotional <= N <= maxNotional` and `N % 1_000_000 == 0` (whole USDG; USDG has 6 decimals);
 5. `reservedLiability + maxPayout <= totalAssets * utilizationCapBps / 10,000`;
-6. free collateral remains sufficient.
+6. `epoch.soldLiability + maxPayout <= maxAggregateLiability`.
 
 The purchase transaction atomically:
-- transfers premium;
+- transfers premium into escrow (`pendingPremium`, epoch `premiumCollected`);
 - increments reserved liability;
-- increments epoch sold liability;
+- increments epoch `soldNotional` and `soldLiability`;
 - creates policy;
 - mints receipt.
+
+### Settlement, premium allocation, and void
+
+`ProtectionPool` is the settlement state-machine authority. `settleClose` / `settleOpen` call the epoch's `IReferenceOracle` adapter, re-check the returned reference time against the epoch window, and record each reference exactly once.
+
+Settlement is allowed only while `block.timestamp < settlementDeadline`. On successful settlement (O(1), no loops):
+- `owed = (soldNotional * coveredBps) / 10,000`; `reservedLiability -= soldLiability - owed`. Because every notional is a whole USDG amount, `owed` equals the sum of the individual rounded-down payouts exactly, for any integer `coveredBps` (no dust);
+- escrowed premium of this epoch only is allocated:
+  - `pendingPremium -= epoch.premiumCollected`;
+  - `protocolFee = (epoch.premiumCollected * protocolFeeBps) / 10,000`; `protocolFeesAccrued += protocolFee`;
+  - `totalAssets += epoch.premiumCollected - protocolFee` (88% to LP economics).
+
+If the epoch is not `Settled`, `voidEpoch(epochId)` is permissionless and deterministic, allowed only when `block.timestamp >= settlementDeadline`. There is no admin or early void. Void releases the epoch's `soldLiability` from `reservedLiability`; its premium stays in `pendingPremium`. Each refund of a voided policy:
+- marks the policy claimed (once);
+- `pendingPremium -= policy.premiumUSDG`;
+- transfers that premium to the policy owner.
+
+`pendingPremium` is never set to zero globally: earlier voided epochs may still have unclaimed refunds, and a later settlement may allocate only its own `premiumCollected`.
 
 ### LP accounting choice
 
@@ -433,10 +469,12 @@ MVP uses **one active protection epoch at a time**.
 
 To avoid share-value timing games:
 - new LP deposits close when policy sales close;
-- LP withdrawals are limited to free collateral and may be fully locked from sale cutoff until epoch settlement for MVP simplicity;
+- LP withdrawals are limited to free collateral and are locked from sale cutoff until the epoch is settled or voided;
 - overlapping active epochs are not supported.
 
 This is intentionally conservative.
+
+Rationale and audit trail for the epoch oracle, `settlementDeadline`/void, premium escrow, and added epoch fields: `docs/PHASE0_DECISIONS.md` §9.
 
 ### Data ownership / retention / deletion
 
@@ -489,9 +527,10 @@ deposit(uint256 assets, address receiver)
 withdraw(uint256 assets, address receiver, address owner)
 createEpoch(EpochConfig config)
 buyProtection(uint256 epochId, uint256 notional)
-settleClose(uint256 epochId, bytes updateData)
-settleOpen(uint256 epochId, bytes updateData)
-claim(uint256 policyId)
+settleClose(uint256 epochId, bytes updateData)   // payable; forwards msg.value to epoch oracle
+settleOpen(uint256 epochId, bytes updateData)    // payable; forwards msg.value to epoch oracle
+voidEpoch(uint256 epochId)                       // permissionless; only at/after settlementDeadline
+claim(uint256 policyId)                          // payout if Settled; premium refund if Voided
 pause()
 unpause()
 ```
@@ -637,9 +676,11 @@ sequenceDiagram
     Server->>Pyth: Fetch signed update in window
     Pyth-->>Server: Signed payload
     Server-->>Operator: Payload
-    Operator->>Oracle: submit close payload
-    Oracle->>Oracle: Verify feed/time/price
-    Oracle->>Pool: Record close reference
+    Operator->>Pool: settleClose(epochId, payload)
+    Pool->>Oracle: verifyReference(feed, window, payload)
+    Oracle->>Oracle: Verify evidence/feed/time/session/price
+    Oracle-->>Pool: price, referenceTime, evidence
+    Pool->>Pool: Record close reference
 
     Note over Operator,Pyth: Monday opening window
 
@@ -647,10 +688,12 @@ sequenceDiagram
     Server->>Pyth: Fetch signed update
     Pyth-->>Server: Signed payload
     Server-->>Operator: Payload
-    Operator->>Oracle: submit open payload
-    Oracle->>Oracle: Verify feed/time/price
-    Oracle->>Pool: Record open reference
-    Pool->>Pool: Finalize gap and epoch
+    Operator->>Pool: settleOpen(epochId, payload)
+    Pool->>Oracle: verifyReference(feed, window, payload)
+    Oracle->>Oracle: Verify evidence/feed/time/session/price
+    Oracle-->>Pool: price, referenceTime, evidence
+    Pool->>Pool: Record open reference
+    Pool->>Pool: Finalize gap, release excess reserve, allocate premium 88/12
 ```
 
 ### Claim
@@ -761,8 +804,10 @@ Economic actions use wallet signatures/transactions.
 
 Testnet roles:
 - admin: `Ownable2Step` or narrowly scoped AccessControl;
-- pauser;
-- settlement operator only if required by oracle submission flow.
+- pauser (the admin);
+- settlement operator (calls `settleClose` / `settleOpen`).
+
+Pause blocks deposits, purchases, new epochs, and other new-risk configuration. Pause never blocks valid settlement, `voidEpoch()`, valid claims/refunds, or withdrawal of genuinely free collateral. No admin path can void an epoch or move escrowed premium, reserved liability, or LP assets.
 
 Claims require receipt ownership.
 
@@ -780,12 +825,14 @@ Post-mainnet:
 | Reentrancy | CEI + ReentrancyGuard |
 | Oracle replay | Each reference set once; evidence hash stored |
 | Wrong feed | Epoch binds feed ID |
-| Stale/out-of-window price | Enforce publish-time bounds |
+| Stale/out-of-window price | Enforce the reference's own update-time bounds and required market session (Pyth: `feedUpdateTimestamp`, `marketSession`) |
 | Invalid price | Reject nonpositive/invalid values |
 | Double settlement | State machine |
 | Post-news purchase | Hard sale cutoff |
 | Precision loss | Integer math, explicit decimals, round payout down |
 | Fee accounting bug | Separate protocol fee from LP assets |
+| Premium captured by LP exiting before risk ends | Premium escrowed until successful settlement |
+| Oracle never settles | `settlementDeadline` + permissionless void and premium refund |
 | Epoch config mutation | Freeze economic config once sales open |
 | Admin abuse | Testnet only; narrow roles; post-mainnet multisig/timelock |
 | Frontend spoof | Contract/network visibility + explorer links |
@@ -901,6 +948,8 @@ Emit:
 - `OpenSettled`
 - `EpochSettled`
 - `ProtectionClaimed`
+- `EpochVoided`
+- `PremiumRefunded`
 - `Paused`
 - `Unpaused`
 
@@ -1037,7 +1086,14 @@ Epoch:
 - no purchase after cutoff;
 - no economic mutation after open;
 - close/open set once;
-- valid window enforcement.
+- valid window enforcement;
+- no settlement at/after `settlementDeadline`; no void before it;
+- void refunds premium once;
+- non-whole-USDG notional rejected;
+- aggregate settled liability (`owed`) equals the sum of individual payouts across multiple policies;
+- successful settlement decreases `pendingPremium` by exactly that epoch's `premiumCollected`;
+- each void refund decrements `pendingPremium` once per policy;
+- refundable premium of an earlier voided epoch cannot be allocated by settlement of a later epoch.
 
 Vault:
 - deposit/share conversion;
@@ -1070,6 +1126,8 @@ Properties:
 5. Sold max liability cannot exceed pool/epoch limits.
 6. Settled references cannot be changed.
 7. Claims cannot exceed policy max payout.
+8. Escrowed premium is never LP-owned or fee before successful settlement.
+9. `pendingPremium` equals the sum of premiums neither allocated by settlement nor refunded.
 
 ### Integration tests
 
@@ -1337,7 +1395,7 @@ Not critical:
 | Chosen Pyth feed not available/verifiable on Robinhood Testnet | Critical oracle story risk | Verify in first 2h; use labeled SnapshotOracle only if blocked |
 | Exact Friday/Monday reference semantics unclear | Wrong payout | Define publish-time windows per epoch and test DST/holiday cases |
 | Pyth access requires unavailable paid key | Blocks integration | Verify immediately; keep oracle adapter independent |
-| ZeroDev hosted Robinhood support unavailable | UX only | Standard wallet fallback |
+| ZeroDev bundler/paymaster fails smoke test on Robinhood Testnet (network is listed) | UX only | Standard wallet fallback |
 | ERC-4626 accounting with reserved liabilities | Solvency | Override withdrawal limits; invariant tests |
 | LPs join after policies sold and capture old premium/risk | Fairness | Close deposits with sales or use one-epoch pool in MVP |
 | LP withdrawal around settlement | Solvency/fairness | Lock or restrict to free collateral during active epoch |
@@ -1348,4 +1406,4 @@ Not critical:
 | Buyer owns no underlying stock | Product/legal | Testnet allowed; post-mainnet likely verify/limit to exposure |
 | Admin config mistake | High | Immutable epoch after open; checklist; later multisig/timelock |
 | No professional audit | High for mainnet | Testnet only; fuzz/invariants/Slither/adversarial review |
-| Deadline/time-zone error | Delivery | Treat HackQuest Oct 4 15:59 Singapore time as authoritative; submit early |
+| Deadline/time-zone error | Delivery | HackQuest shows `Oct 4,2026 15:59` with no timezone; treat the earliest plausible reading as binding; submit early |

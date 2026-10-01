@@ -586,7 +586,7 @@ Only after legally launchable:
 | Buy after bad weekend news | Adverse selection | High | Critical | Hard pre-weekend cutoff | Contracts |
 | Pool sells more liability than collateral | Solvency | Low if correct | Critical | Atomic reserve + invariant tests + cap | Contracts |
 | Oracle unavailable on chosen chain/feed | Technical | Medium | High | Oracle interface + labeled testnet fallback | Engineering |
-| Wrong/stale reference window | Technical | Medium | Critical | Feed ID + publish-time window checks | Contracts |
+| Wrong/stale reference window | Technical | Medium | Critical | Feed ID + per-feed update-time (`feedUpdateTimestamp`) window + market-session checks | Contracts |
 | Demo oracle mistaken for production | Trust | Medium | High | Persistent TESTNET DEMO labeling | Product |
 | LP interprets premium as risk-free yield | UX/legal | Medium | High | Always show worst-case liability | Product |
 | Weekend token already reprices news | Market | High | Medium | Settle on defined underlying close/open; disclose basis risk | Product |
@@ -594,7 +594,7 @@ Only after legally launchable:
 | Too much scope misses deadline | Delivery | High | High | One stock, one epoch, one pool, one tier first | Lead |
 | Gapguard/Plume comparison weakens novelty | Competitive | High | Medium | Buyer-vs-LP and parametric-vs-options differentiation | Founder |
 | Admin key compromise | Security | Low | High | Testnet EOA; multisig/timelock before mainnet | Engineering |
-| ZeroDev unsupported hosted chain | Integration | Medium | Medium | Standard wallet fallback | Frontend |
+| ZeroDev bundler/paymaster fails smoke test (Robinhood Testnet is listed) | Integration | Medium | Medium | Standard wallet fallback | Frontend |
 
 ## 16. Assumptions & Open Questions
 
@@ -616,7 +616,7 @@ Only after legally launchable:
 
 1. Does the chosen Pyth equity feed verify on Robinhood Chain Testnet under available credentials?
 2. What exact timestamps define Friday close and Monday open across DST/holidays?
-3. Does ZeroDev hosted bundler/paymaster support Robinhood Chain Testnet?
+3. Does ZeroDev hosted bundler/paymaster work for our project on Robinhood Chain Testnet? (The network is listed by ZeroDev as of 2026-10-01; sponsorship is not yet smoke-tested.)
 4. Are sufficient Robinhood test ETH and USDG available for the judge demo?
 5. What exact HackQuest repository/deployment evidence is mandatory?
 6. Can “parametric protection” be used safely in pitch copy without implying licensed insurance?
