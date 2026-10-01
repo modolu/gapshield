@@ -1,0 +1,20 @@
+# Foundry
+/out/
+/cache/
+/broadcast/*/31337/
+/broadcast/**/dry-run/
+
+# Secrets — never commit
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Node / Next.js (web/ has its own .gitignore as well)
+node_modules/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
