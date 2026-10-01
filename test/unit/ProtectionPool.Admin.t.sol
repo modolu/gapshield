@@ -24,11 +24,12 @@ contract ProtectionPoolAdminTest is PoolTestBase {
     }
 
     function test_setSettlementOperator() public {
+        address next = makeAddr("nextOperator");
         vm.expectEmit(address(pool));
-        emit ProtectionPool.SettlementOperatorSet(address(0), operator);
+        emit ProtectionPool.SettlementOperatorSet(operator, next);
         vm.prank(owner);
-        pool.setSettlementOperator(operator);
-        assertEq(pool.settlementOperator(), operator);
+        pool.setSettlementOperator(next);
+        assertEq(pool.settlementOperator(), next);
     }
 
     function test_setSettlementOperator_onlyOwnerAndNonZero() public {

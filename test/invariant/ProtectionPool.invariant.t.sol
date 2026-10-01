@@ -6,94 +6,126 @@ import {PoolTestBase} from "../utils/PoolTestBase.sol";
 import {PoolHandler} from "./PoolHandler.sol";
 import {ProtectionPool} from "../../contracts/ProtectionPool.sol";
 
+/// @notice Full-lifecycle invariants (Architecture §16, Phase 2 brief 1–15). The handler creates epochs itself,
+/// settles or voids them, and claims/refunds policies, all interleaved with LP flows, pause and donations.
+/// forge-config: default.invariant.depth = 128
+/// forge-config: ci.invariant.depth = 128
 contract ProtectionPoolInvariantTest is StdInvariant, PoolTestBase {
     PoolHandler internal handler;
-    uint256 internal epochId;
 
     function setUp() public override {
         super.setUp();
-        ProtectionPool.EpochConfig memory c = _defaultConfig();
-        c.maxAggregateLiability = 100_000 * USDG;
-        epochId = _createEpoch(c);
-        handler = new PoolHandler(pool, usdg, owner, epochId);
+        handler = new PoolHandler(pool, oracle, usdg, owner, operator, TSLA, TSLA_FEED_ID);
+        // The handler posts snapshots as the oracle owner; it uses `owner` for both roles.
         targetContract(address(handler));
     }
 
-    /// 1. reservedLiability <= claim-supporting collateral (LP-owned assets).
-    function invariant_reservedLiabilityWithinClaimSupportingCollateral() public view {
+    // 1. reservedLiability <= LP-owned (claim-supporting) collateral, always.
+    function invariant_01_reservedWithinLpAssets() public view {
         assertLe(pool.reservedLiability(), pool.totalAssets());
     }
 
-    /// 2. LP withdrawal never reduces claim-supporting collateral below reservedLiability: no LP can ever be
-    /// offered more than free collateral, and every reserve change is accounted for by purchases only.
-    function invariant_withdrawalsBoundedByFreeCollateral() public view {
-        assertEq(handler.ghostMaxWithdrawViolations(), 0);
+    // 2. claimablePayouts == aggregate settled-unclaimed policy payouts.
+    function invariant_02_claimableEqualsSettledUnclaimed() public view {
+        uint256 sum;
+        for (uint256 i; i < handler.policyCount(); ++i) {
+            uint256 id = handler.policyIds(i);
+            ProtectionPool.Policy memory p = pool.getPolicy(id);
+            ProtectionPool.EpochState memory s = pool.getEpochState(p.epochId);
+            if (s.status == ProtectionPool.EpochStatus.Settled && !p.claimed) {
+                sum += p.notional * s.coveredBps / 10_000;
+            }
+        }
+        assertEq(pool.claimablePayouts(), sum);
+    }
+
+    // 3. pendingPremium == premium neither allocated by settlement nor refunded.
+    function invariant_03_pendingEqualsUnallocatedUnrefunded() public view {
+        uint256 sum;
+        for (uint256 i; i < handler.policyCount(); ++i) {
+            uint256 id = handler.policyIds(i);
+            ProtectionPool.Policy memory p = pool.getPolicy(id);
+            ProtectionPool.EpochStatus st = pool.getEpochState(p.epochId).status;
+            bool live = st == ProtectionPool.EpochStatus.Open || st == ProtectionPool.EpochStatus.CloseRecorded;
+            bool unrefunded = st == ProtectionPool.EpochStatus.Voided && !p.claimed;
+            if (live || unrefunded) sum += p.premiumUSDG;
+        }
+        assertEq(pool.pendingPremium(), sum);
+    }
+
+    // 4. USDG balance >= totalAssets + pendingPremium + claimablePayouts + protocolFeesAccrued
+    //    (exactly equal plus unsolicited donations, which are never credited to any bucket).
+    function invariant_04_balanceCoversAllBuckets() public view {
+        uint256 buckets =
+            pool.totalAssets() + pool.pendingPremium() + pool.claimablePayouts() + pool.protocolFeesAccrued();
+        assertGe(usdg.balanceOf(address(pool)), buckets);
+        assertEq(usdg.balanceOf(address(pool)), buckets + handler.ghostDonations());
+    }
+
+    // 5. Free collateral excludes claimable payouts, premium escrow and protocol fees: LP-owned assets match the
+    //    independent model, which never adds those buckets to LP capital.
+    function invariant_05_freeCollateralExcludesNonLpBuckets() public view {
+        assertEq(pool.totalAssets(), handler.ghostLpAssets());
+        assertEq(pool.freeCollateral(), handler.ghostLpAssets() - handler.ghostReserved());
+        assertEq(pool.reservedLiability(), handler.ghostReserved());
+        assertEq(pool.pendingPremium(), handler.ghostPending());
+        assertEq(pool.claimablePayouts(), handler.ghostClaimable());
+        assertEq(pool.protocolFeesAccrued(), handler.ghostFees());
+    }
+
+    // 6–9. LP withdrawals cannot consume reserved liability, settled claimable payouts, refundable premium or
+    //      protocol fees: no LP is ever offered more than free collateral, and the handler verifies after every
+    //      withdraw/redeem that the reserve, escrow, claimable and fee buckets are unchanged.
+    function invariant_06_09_withdrawalsBoundedToLpBucket() public view {
         for (uint256 i; i < handler.lpCount(); ++i) {
             address lp = handler.lps(i);
             assertLe(pool.maxWithdraw(lp), pool.freeCollateral());
             assertLe(pool.previewRedeem(pool.maxRedeem(lp)), pool.freeCollateral());
         }
+        assertEq(handler.ghostUnexpected(), 0, handler.lastUnexpected());
     }
 
-    /// 3. Policy economics (incl. max payout) are immutable after purchase.
-    function invariant_policyTermsImmutable() public view {
-        for (uint256 i; i < handler.policyCount(); ++i) {
-            uint256 policyId = handler.policyIds(i);
-            ProtectionPool.Policy memory p = pool.getPolicy(policyId);
-            assertEq(p.maxPayout, handler.ghostMaxPayout(policyId));
-            assertEq(p.notional, handler.ghostNotional(policyId));
-            assertEq(p.premiumUSDG, handler.ghostPremium(policyId));
-            assertEq(p.epochId, epochId);
-            assertFalse(p.claimed);
+    // 10–12. Settled references never change; Settled never becomes Voided; Voided never settles.
+    function invariant_10_12_terminalStatesAndReferencesFrozen() public view {
+        for (uint256 i; i < handler.epochCount(); ++i) {
+            uint256 id = handler.epochIds(i);
+            PoolHandler.GhostEpoch memory g = handler.ghostEpoch(id);
+            ProtectionPool.EpochState memory s = pool.getEpochState(id);
+            assertEq(uint8(s.status), uint8(g.status), "on-chain status matches the model");
+            if (g.status == ProtectionPool.EpochStatus.Settled) {
+                assertEq(handler.refsHash(id), g.refsHash, "settled references frozen");
+            }
+            if (g.status == ProtectionPool.EpochStatus.Voided) {
+                assertEq(s.openPrice, 0, "a voided epoch never recorded an open");
+            }
         }
     }
 
-    /// 4. Aggregate sold liability never exceeds configured limits, and reserve equals what was sold.
-    function invariant_aggregateLiabilityWithinLimits() public view {
-        ProtectionPool.EpochState memory s = pool.getEpochState(epochId);
-        ProtectionPool.EpochConfig memory c = pool.getEpochConfig(epochId);
-        assertLe(s.soldLiability, c.maxAggregateLiability);
-        assertEq(pool.reservedLiability(), s.soldLiability, "Phase 1: only one epoch reserves liability");
-        uint256 sumMaxPayout;
-        uint256 sumNotional;
+    // 13. No policy can claim or refund twice.
+    function invariant_13_noDoubleClaim() public view {
         for (uint256 i; i < handler.policyCount(); ++i) {
-            uint256 policyId = handler.policyIds(i);
-            sumMaxPayout += handler.ghostMaxPayout(policyId);
-            sumNotional += handler.ghostNotional(policyId);
+            uint256 id = handler.policyIds(i);
+            PoolHandler.GhostPolicy memory g = handler.ghostPolicy(id);
+            assertLe(g.claimCount, 1);
+            assertEq(pool.getPolicy(id).claimed, g.claimed);
+            assertEq(pool.getPolicy(id).maxPayout, g.maxPayout, "policy terms immutable");
+            assertEq(receipt.ownerOf(id), g.owner, "receipt ownership fixed");
         }
-        assertEq(s.soldLiability, sumMaxPayout);
-        assertEq(s.soldNotional, sumNotional);
-    }
-
-    /// 5. Escrowed premium is never counted as LP-owned capital before settlement.
-    function invariant_escrowedPremiumNotLpCapital() public view {
-        assertEq(pool.totalAssets(), handler.ghostLpDeposited() - handler.ghostLpWithdrawn());
-        assertEq(pool.pendingPremium(), handler.ghostPremiums());
-        assertEq(pool.getEpochState(epochId).premiumCollected, handler.ghostPremiums());
-    }
-
-    /// 6. Protocol fees are never counted as LP-owned capital; token balance covers every bucket exactly
-    /// (plus untracked donations, which are never credited to anyone).
-    function invariant_feesAndBalanceSegregated() public view {
-        assertEq(pool.protocolFeesAccrued(), 0, "Phase 1: fees accrue only at settlement");
-        assertEq(
-            usdg.balanceOf(address(pool)),
-            pool.totalAssets() + pool.pendingPremium() + pool.protocolFeesAccrued() + handler.ghostDonations()
-        );
-    }
-
-    /// 7. Receipt ownership cannot change through transfer or approval.
-    function invariant_receiptOwnershipFixed() public view {
         assertEq(handler.ghostReceiptTransferSuccesses(), 0);
-        for (uint256 i; i < handler.policyCount(); ++i) {
-            uint256 policyId = handler.policyIds(i);
-            assertEq(receipt.ownerOf(policyId), handler.ghostOwner(policyId));
-        }
-        if (handler.policyCount() > 0) assertEq(receipt.getApproved(handler.policyIds(0)), address(0));
     }
 
-    /// Every handler action matched the independent model (valid actions succeeded, invalid ones reverted).
-    function invariant_handlerOutcomesMatchModel() public view {
+    // 14. claimablePayouts never becomes selling capacity: capacity is computed from LP-owned assets only.
+    function invariant_14_claimableNotCapacity() public view {
+        // Purchases are predicted with capacity = ghostLpAssets * cap; any purchase enabled by claimable money
+        // would have registered as an unexpected outcome. Also check the bucket is disjoint from LP assets.
+        assertEq(pool.totalAssets(), handler.ghostLpAssets());
+        assertLe(pool.reservedLiability(), pool.totalAssets());
+        assertEq(handler.ghostUnexpected(), 0, handler.lastUnexpected());
+    }
+
+    // 15. Pause cannot trap valid settlement, claims, refunds, void or free-collateral withdrawal: the handler's
+    //     model ignores pause for those actions, so any pause-induced revert is an unexpected outcome.
+    function invariant_15_pauseNeverTrapsFunds() public view {
         assertEq(handler.ghostUnexpected(), 0, handler.lastUnexpected());
     }
 }

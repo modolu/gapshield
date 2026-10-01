@@ -6,7 +6,7 @@ import {Test} from "forge-std/Test.sol";
 import {ProtectionPool} from "../../contracts/ProtectionPool.sol";
 import {ProtectionReceipt} from "../../contracts/ProtectionReceipt.sol";
 import {MockUSDG} from "../../contracts/mocks/MockUSDG.sol";
-import {StubReferenceOracle} from "./StubReferenceOracle.sol";
+import {SnapshotOracle} from "../../contracts/oracles/SnapshotOracle.sol";
 
 /// @notice Shared fixture: frozen Phase 0 economics and the "TSLA 2026-W40" demo epoch timestamps.
 abstract contract PoolTestBase is Test {
@@ -42,19 +42,21 @@ abstract contract PoolTestBase is Test {
     address internal buyer2 = makeAddr("buyer2");
 
     MockUSDG internal usdg;
-    StubReferenceOracle internal oracle;
+    SnapshotOracle internal oracle;
     ProtectionPool internal pool;
     ProtectionReceipt internal receipt;
 
     function setUp() public virtual {
         vm.warp(START_TIME);
         usdg = new MockUSDG();
-        oracle = new StubReferenceOracle();
+        oracle = new SnapshotOracle(owner);
         pool = new ProtectionPool(usdg, owner, UTILIZATION_CAP_BPS);
         receipt = pool.receipt();
 
-        vm.prank(owner);
+        vm.startPrank(owner);
         pool.addAsset(TSLA, TSLA_FEED_ID, "TSLA", 5);
+        pool.setSettlementOperator(operator);
+        vm.stopPrank();
     }
 
     function _defaultConfig() internal view returns (ProtectionPool.EpochConfig memory) {
@@ -75,6 +77,17 @@ abstract contract PoolTestBase is Test {
             maxNotional: MAX_NOTIONAL,
             maxAggregateLiability: MAX_AGGREGATE_LIABILITY
         });
+    }
+
+    /// @dev The default config with every timestamp shifted forward by `offset` seconds (for later epochs).
+    function _shiftedConfig(uint64 offset) internal view returns (ProtectionPool.EpochConfig memory c) {
+        c = _defaultConfig();
+        c.saleCutoff += offset;
+        c.closeWindowStart += offset;
+        c.closeWindowEnd += offset;
+        c.openWindowStart += offset;
+        c.openWindowEnd += offset;
+        c.settlementDeadline += offset;
     }
 
     function _createEpoch(ProtectionPool.EpochConfig memory config) internal returns (uint256 epochId) {
@@ -98,6 +111,41 @@ abstract contract PoolTestBase is Test {
         usdg.mint(buyer, amount);
         vm.prank(buyer);
         usdg.approve(address(pool), type(uint256).max);
+    }
+
+    /// @dev Posts a TESTNET DEMO snapshot (as the oracle owner) and returns its `updateData`.
+    function _snapshot(uint256 price, uint64 referenceTime) internal returns (bytes memory updateData) {
+        vm.prank(owner);
+        bytes32 id = oracle.postSnapshot(TSLA_FEED_ID, price, referenceTime);
+        updateData = abi.encode(id);
+    }
+
+    /// @dev Warps into the close window, posts the snapshot and records the close.
+    function _settleClose(uint256 epochId, uint256 price) internal {
+        ProtectionPool.EpochConfig memory c = pool.getEpochConfig(epochId);
+        if (block.timestamp < c.closeWindowStart) vm.warp(c.closeWindowStart);
+        bytes memory data = _snapshot(price, c.closeWindowStart);
+        vm.prank(operator);
+        pool.settleClose(epochId, data);
+    }
+
+    /// @dev Warps into the open window, posts the snapshot and records the open (finalizing the epoch).
+    function _settleOpen(uint256 epochId, uint256 price) internal {
+        ProtectionPool.EpochConfig memory c = pool.getEpochConfig(epochId);
+        if (block.timestamp < c.openWindowStart) vm.warp(c.openWindowStart);
+        bytes memory data = _snapshot(price, c.openWindowStart);
+        vm.prank(operator);
+        pool.settleOpen(epochId, data);
+    }
+
+    function _settle(uint256 epochId, uint256 closePrice, uint256 openPrice) internal {
+        _settleClose(epochId, closePrice);
+        _settleOpen(epochId, openPrice);
+    }
+
+    function _claim(address claimant, uint256 policyId) internal returns (uint256 amount) {
+        vm.prank(claimant);
+        amount = pool.claim(policyId);
     }
 
     function _buy(address buyer, uint256 epochId, uint256 notional) internal returns (uint256 policyId) {

@@ -13,6 +13,7 @@ import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
 import {ProtectionReceipt} from "./ProtectionReceipt.sol";
+import {IReferenceOracle} from "./interfaces/IReferenceOracle.sol";
 import {PremiumMath} from "./libraries/PremiumMath.sol";
 import {PayoutMath} from "./libraries/PayoutMath.sol";
 
@@ -21,9 +22,11 @@ import {PayoutMath} from "./libraries/PayoutMath.sol";
 /// @dev Accounting model (GAPSHIELD_PRODUCT_ARCHITECTURE.md §7, docs/PHASE0_DECISIONS.md §9):
 /// - `totalAssets()` is internally tracked LP-owned capital (`_lpAssets`), never `balanceOf(this)`.
 /// - Premium is escrowed in `pendingPremium` and is not LP-owned until successful settlement.
+/// - Settled payouts awaiting claims sit in `claimablePayouts` (P7), never in LP-owned assets.
 /// - `protocolFeesAccrued` is never LP-owned.
 /// - `freeCollateral = totalAssets - reservedLiability`; worst-case payout is reserved atomically at purchase.
-/// Settlement (`settleClose`/`settleOpen`), `voidEpoch` and `claim` are Phase 2; their storage exists already.
+/// Epoch state machine: None -> Open -> CloseRecorded -> Settled, or Open|CloseRecorded -> Voided after the
+/// settlement deadline. Settlement and void windows are disjoint (`< settlementDeadline` vs `>=`).
 contract ProtectionPool is ERC4626, Ownable2Step, Pausable, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
@@ -97,7 +100,9 @@ contract ProtectionPool is ERC4626, Ownable2Step, Pausable, ReentrancyGuard {
     uint256 private _lpAssets;
     uint256 public reservedLiability;
     uint256 public pendingPremium;
-    /// @dev Written only by successful settlement (Phase 2); never LP-owned.
+    /// @notice Settled buyer money awaiting claims (P7). Not LP-owned, not fees, not escrow, not free collateral.
+    uint256 public claimablePayouts;
+    /// @notice Accrued only by successful settlement; never LP-owned. Withdrawable by the owner only.
     uint256 public protocolFeesAccrued;
     uint256 public activeEpochId;
     uint256 public nextEpochId = 1;
@@ -125,6 +130,22 @@ contract ProtectionPool is ERC4626, Ownable2Step, Pausable, ReentrancyGuard {
         uint256 maxPayout
     );
     event SettlementOperatorSet(address indexed previousOperator, address indexed newOperator);
+    event CloseSettled(uint256 indexed epochId, uint256 price, uint64 referenceTime, bytes32 evidence);
+    event OpenSettled(uint256 indexed epochId, uint256 price, uint64 referenceTime, bytes32 evidence);
+    event EpochSettled(
+        uint256 indexed epochId,
+        uint16 gapBps,
+        uint16 coveredBps,
+        uint256 actualOwed,
+        uint256 protocolFee,
+        uint256 lpPremium
+    );
+    event EpochVoided(uint256 indexed epochId, uint256 releasedLiability, uint256 refundablePremium);
+    event ProtectionClaimed(
+        uint256 indexed policyId, uint256 indexed epochId, address indexed claimant, uint256 payout
+    );
+    event PremiumRefunded(uint256 indexed policyId, uint256 indexed epochId, address indexed claimant, uint256 amount);
+    event ProtocolFeesWithdrawn(address indexed to, uint256 amount);
 
     error UnsupportedAssetDecimals(uint8 decimals);
     error ZeroAddress();
@@ -147,6 +168,15 @@ contract ProtectionPool is ERC4626, Ownable2Step, Pausable, ReentrancyGuard {
     error EpochCapacityExceeded(uint256 requestedLiability, uint256 maxAggregateLiability);
     error WithdrawalExceedsFreeCollateral(uint256 assets, uint256 freeCollateral);
     error UnknownPolicy(uint256 policyId);
+    error NotSettlementOperator(address caller);
+    error InvalidEpochStatus(uint256 epochId, EpochStatus status);
+    error SettlementDeadlinePassed(uint256 epochId, uint64 settlementDeadline);
+    error SettlementDeadlineNotReached(uint256 epochId, uint64 settlementDeadline);
+    error InvalidReferencePrice();
+    error InvalidReferenceTime(uint64 referenceTime, uint64 windowStart, uint64 windowEnd);
+    error NotPolicyOwner(uint256 policyId, address caller);
+    error PolicyAlreadyClaimed(uint256 policyId);
+    error InsufficientProtocolFees(uint256 requested, uint256 available);
 
     constructor(IERC20Metadata usdg_, address owner_, uint16 utilizationCapBps_)
         ERC20("GapShield USDG Underwriter Share", "gsUSDG")
@@ -296,10 +326,107 @@ contract ProtectionPool is ERC4626, Ownable2Step, Pausable, ReentrancyGuard {
     }
 
     // ---------------------------------------------------------------------
+    // Settlement (operator-gated; never pause-gated)
+    // ---------------------------------------------------------------------
+
+    /// @notice Records the epoch's close reference through its frozen oracle. Open -> CloseRecorded.
+    /// @dev `payable` so vendor verification fees (e.g. Pyth) can be forwarded; fee-less adapters reject value.
+    function settleClose(uint256 epochId, bytes calldata updateData) external payable nonReentrant {
+        EpochState storage state = _beginSettlement(epochId, EpochStatus.Open);
+        EpochConfig storage config = _epochConfigs[epochId];
+
+        (uint256 price, uint64 referenceTime, bytes32 evidence) =
+            _verifyReference(config, config.closeWindowStart, config.closeWindowEnd, updateData);
+
+        state.closePrice = price;
+        state.closeTime = referenceTime;
+        state.closeEvidence = evidence;
+        state.status = EpochStatus.CloseRecorded;
+        emit CloseSettled(epochId, price, referenceTime, evidence);
+    }
+
+    /// @notice Records the epoch's open reference and finalizes the epoch. CloseRecorded -> Settled.
+    function settleOpen(uint256 epochId, bytes calldata updateData) external payable nonReentrant {
+        EpochState storage state = _beginSettlement(epochId, EpochStatus.CloseRecorded);
+        EpochConfig storage config = _epochConfigs[epochId];
+
+        (uint256 price, uint64 referenceTime, bytes32 evidence) =
+            _verifyReference(config, config.openWindowStart, config.openWindowEnd, updateData);
+
+        state.openPrice = price;
+        state.openTime = referenceTime;
+        state.openEvidence = evidence;
+        emit OpenSettled(epochId, price, referenceTime, evidence);
+
+        _finalizeSettlement(epochId, config, state);
+    }
+
+    /// @notice Permissionless, deterministic void once the settlement deadline has passed without settlement.
+    /// Releases the epoch's whole reserve; its premium stays escrowed for per-policy refunds via `claim`.
+    function voidEpoch(uint256 epochId) external {
+        EpochState storage state = _epochStates[epochId];
+        if (state.status != EpochStatus.Open && state.status != EpochStatus.CloseRecorded) {
+            revert InvalidEpochStatus(epochId, state.status);
+        }
+        uint64 deadline = _epochConfigs[epochId].settlementDeadline;
+        if (block.timestamp < deadline) revert SettlementDeadlineNotReached(epochId, deadline);
+
+        reservedLiability -= state.soldLiability;
+        state.status = EpochStatus.Voided;
+        emit EpochVoided(epochId, state.soldLiability, state.premiumCollected);
+    }
+
+    // ---------------------------------------------------------------------
+    // Claims and refunds (never pause-gated)
+    // ---------------------------------------------------------------------
+
+    /// @notice One-time finalization of a policy by its receipt owner: the settled payout (possibly zero) for a
+    /// Settled epoch, or the full premium refund for a Voided epoch.
+    function claim(uint256 policyId) external nonReentrant returns (uint256 amount) {
+        Policy storage policy = _policies[policyId];
+        uint256 epochId = policy.epochId;
+        if (epochId == 0) revert UnknownPolicy(policyId);
+        if (receipt.ownerOf(policyId) != msg.sender) revert NotPolicyOwner(policyId, msg.sender);
+        if (policy.claimed) revert PolicyAlreadyClaimed(policyId);
+
+        EpochState storage state = _epochStates[epochId];
+        if (state.status == EpochStatus.Settled) {
+            amount = PayoutMath.payout(policy.notional, state.coveredBps);
+            policy.claimed = true;
+            claimablePayouts -= amount;
+            emit ProtectionClaimed(policyId, epochId, msg.sender, amount);
+        } else if (state.status == EpochStatus.Voided) {
+            amount = policy.premiumUSDG;
+            policy.claimed = true;
+            pendingPremium -= amount;
+            emit PremiumRefunded(policyId, epochId, msg.sender, amount);
+        } else {
+            revert InvalidEpochStatus(epochId, state.status);
+        }
+
+        if (amount > 0) IERC20(asset()).safeTransfer(msg.sender, amount);
+    }
+
+    // ---------------------------------------------------------------------
+    // Protocol fees (owner; accrued fees only)
+    // ---------------------------------------------------------------------
+
+    /// @notice Withdraws only `protocolFeesAccrued`. There is no general token sweep.
+    function withdrawProtocolFees(address to, uint256 amount) external nonReentrant onlyOwner {
+        if (to == address(0)) revert ZeroAddress();
+        uint256 available = protocolFeesAccrued;
+        if (amount > available) revert InsufficientProtocolFees(amount, available);
+        protocolFeesAccrued = available - amount;
+        emit ProtocolFeesWithdrawn(to, amount);
+        IERC20(asset()).safeTransfer(to, amount);
+    }
+
+    // ---------------------------------------------------------------------
     // ERC-4626 vault: LP-owned capital only
     // ---------------------------------------------------------------------
 
-    /// @notice LP-owned capital. Excludes escrowed premium and protocol fees; ignores direct token donations.
+    /// @notice LP-owned capital. Excludes escrowed premium, settled claimable payouts and protocol fees;
+    /// ignores direct token donations.
     function totalAssets() public view override returns (uint256) {
         return _lpAssets;
     }
@@ -396,12 +523,76 @@ contract ProtectionPool is ERC4626, Ownable2Step, Pausable, ReentrancyGuard {
         maxPayout = PayoutMath.maxPayout(notional, config.maxCoverBps);
     }
 
+    /// @notice Settled payout of a policy (0 unless its epoch is Settled). Informational; ignores `claimed`.
+    function previewPayout(uint256 policyId) external view returns (uint256) {
+        Policy storage policy = _policies[policyId];
+        if (policy.epochId == 0) revert UnknownPolicy(policyId);
+        EpochState storage state = _epochStates[policy.epochId];
+        if (state.status != EpochStatus.Settled) return 0;
+        return PayoutMath.payout(policy.notional, state.coveredBps);
+    }
+
     /// @notice Hypothetical payout of an existing policy for given close/open reference prices (payout scrubber).
     function previewPayoutAt(uint256 policyId, uint256 closePrice, uint256 openPrice) external view returns (uint256) {
         Policy storage policy = _policies[policyId];
         if (policy.epochId == 0) revert UnknownPolicy(policyId);
         EpochConfig storage config = _epochConfigs[policy.epochId];
         return PayoutMath.payoutFor(policy.notional, closePrice, openPrice, config.triggerBps, config.maxCoverBps);
+    }
+
+    // ---------------------------------------------------------------------
+    // Settlement internals
+    // ---------------------------------------------------------------------
+
+    function _beginSettlement(uint256 epochId, EpochStatus expected) internal view returns (EpochState storage state) {
+        if (msg.sender != settlementOperator) revert NotSettlementOperator(msg.sender);
+        state = _epochStates[epochId];
+        if (state.status != expected) revert InvalidEpochStatus(epochId, state.status);
+        uint64 deadline = _epochConfigs[epochId].settlementDeadline;
+        if (block.timestamp >= deadline) revert SettlementDeadlinePassed(epochId, deadline);
+    }
+
+    /// @dev Calls the epoch's frozen oracle, then re-checks the critical conditions itself: positive price,
+    /// reference time inside `[windowStart, windowEnd)` and not in the future.
+    function _verifyReference(
+        EpochConfig storage config,
+        uint64 windowStart,
+        uint64 windowEnd,
+        bytes calldata updateData
+    ) internal returns (uint256 price, uint64 referenceTime, bytes32 evidence) {
+        bytes32 feedId = _assets[config.assetId].oracleFeedId;
+        (price, referenceTime, evidence) = IReferenceOracle(config.oracle).verifyReference{value: msg.value}(
+            feedId, windowStart, windowEnd, updateData
+        );
+        if (price == 0) revert InvalidReferencePrice();
+        if (referenceTime < windowStart || referenceTime >= windowEnd || referenceTime > block.timestamp) {
+            revert InvalidReferenceTime(referenceTime, windowStart, windowEnd);
+        }
+    }
+
+    /// @dev P7 accounting. Immediately before this runs for the active epoch,
+    /// `actualOwed <= soldLiability <= reservedLiability <= _lpAssets`, so no subtraction underflows.
+    function _finalizeSettlement(uint256 epochId, EpochConfig storage config, EpochState storage state) internal {
+        uint256 gap = PayoutMath.gapBps(state.closePrice, state.openPrice);
+        uint256 covered = PayoutMath.coveredBps(gap, config.triggerBps, config.maxCoverBps);
+        uint256 actualOwed = PayoutMath.payout(state.soldNotional, covered);
+
+        reservedLiability -= state.soldLiability;
+        _lpAssets -= actualOwed;
+        claimablePayouts += actualOwed;
+
+        uint256 premium = state.premiumCollected;
+        pendingPremium -= premium;
+        uint256 protocolFee = PremiumMath.protocolFee(premium, config.protocolFeeBps);
+        protocolFeesAccrued += protocolFee;
+        _lpAssets += premium - protocolFee;
+
+        // gap <= 10_000 and covered <= maxCoverBps, so both fit in uint16.
+        state.gapBps = uint16(gap);
+        state.coveredBps = uint16(covered);
+        state.status = EpochStatus.Settled;
+
+        emit EpochSettled(epochId, uint16(gap), uint16(covered), actualOwed, protocolFee, premium - protocolFee);
     }
 
     // ---------------------------------------------------------------------

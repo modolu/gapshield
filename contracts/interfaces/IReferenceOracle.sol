@@ -5,7 +5,7 @@ pragma solidity 0.8.37;
 /// @notice Stateless adapter that validates vendor-specific reference evidence for the ProtectionPool.
 /// @dev Frozen in Phase 0 (docs/PHASE0_DECISIONS.md §9, P4). The pool is the settlement state-machine
 /// authority: it calls this adapter, re-checks the returned window and price, and records each reference once.
-/// Adapters never write pool state. Implementations arrive in Phase 2.
+/// Adapters never write pool state. Current implementation: SnapshotOracle (TESTNET DEMO ORACLE).
 interface IReferenceOracle {
     /// @notice Verifies `updateData` as a reference for `feedId` inside `[windowStart, windowEnd)`.
     /// @dev Must revert on any failed check, including a market session other than the epoch's required session
