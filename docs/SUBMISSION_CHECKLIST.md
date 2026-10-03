@@ -6,12 +6,12 @@ of margin). Status as of 2026-10-03.
 | # | Item | Status | Notes |
 |---|---|---|---|
 | 1 | Repo public | ✅ | https://github.com/modolu/gapshield (visibility: PUBLIC) |
-| 2 | CI green | ✅ | Run `37146441151` passed (hygiene, contracts, web). Re-check after the submission-docs commit. |
+| 2 | CI green | ✅ | Run `37149700814` passed after submission prep (hygiene, contracts, web). |
 | 3 | Contracts deployed | ✅ | Robinhood Chain Testnet 46630; `deployments/46630.json` |
 | 4 | Evidence committed | ✅ | `docs/TESTNET_DEMO_EVIDENCE.md` (commit `2feb3a6`) |
-| 5 | Contract addresses in README / SUBMISSION / form copy | ✅ | Included in the submission-prep files. |
+| 5 | Contract addresses in README / SUBMISSION / form copy | ✅ | Included in commit `c4579ca`. |
 | 6 | Source verification | ⚠️ | Blockscout lacks solc 0.8.37, so source verification isn't possible there yet. Bytecode match is documented in the evidence file. |
-| 7 | README, LICENSE, SUBMISSION.md, form copy | ✅ | Included in the submission-prep files. |
+| 7 | README, LICENSE, SUBMISSION.md, form copy | ✅ | Included in commit `c4579ca`. |
 | 8 | Demo video recorded | ⬜ | Follow `docs/DEMO_VIDEO_PLAN.md` (2:30–2:50) |
 | 9 | Demo video uploaded (public or unlisted link) | ⬜ | YouTube, Loom, etc. Test the link in a private window. |
 | 10 | Screenshots | ⬜ | Suggested: README top; explorer claim tx showing the 40 USDG transfer; terminal `getEpochState(2)` output; evidence-doc tx table |
