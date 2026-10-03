@@ -3,6 +3,10 @@
 > **TESTNET ONLY.** Settlement uses `SnapshotOracle`, the **TESTNET DEMO ORACLE**: a single trusted operator
 > posts prices. It is not a production oracle and must never back real-money settlement.
 
+**Live deployment and demo:** Robinhood Chain Testnet addresses are in `deployments/46630.json`, and a full on-chain
+lifecycle (void path plus a settled 40 USDG payout) is recorded in [`TESTNET_DEMO_EVIDENCE.md`](TESTNET_DEMO_EVIDENCE.md).
+`script/RunTestnetDemo.s.sol` replays it against deployed contracts.
+
 ## What gets deployed
 
 `script/DeployGapShield.s.sol` deploys, in one broadcast:
