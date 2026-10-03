@@ -59,8 +59,9 @@ forge script script/DeployGapShield.s.sol --rpc-url $ROBINHOOD_TESTNET_RPC_URL \
 
 ## Verify on Blockscout
 
-The explorer is Blockscout (`/api/v2` responds). Verification has not been tried on this chain yet, so expect to
-adjust flags.
+The explorer is Blockscout. **These commands currently fail with `Fail - Unable to verify`.** The Robinhood Testnet
+Blockscout supports solc only up to 0.8.36, and GapShield is compiled with 0.8.37. Until the explorer adds 0.8.37, use
+the bytecode check in [`TESTNET_DEMO_EVIDENCE.md`](TESTNET_DEMO_EVIDENCE.md#source-verification) instead.
 
 ```sh
 V="--chain 46630 --verifier blockscout --verifier-url https://explorer.testnet.chain.robinhood.com/api/"

@@ -26,6 +26,10 @@ transactions have receipt status `1`.
 
 The addresses are also in `deployments/46630.json`. In this demo one wallet plays every role (LP, buyer, operator).
 
+`deployments/46630.json` records Solidity `block.number` from the deployment script. On Arbitrum-based chains, Solidity
+`block.number` reflects the first non-Arbitrum ancestor-chain block estimate rather than the L2 explorer height, so that
+manifest value is not expected to match the Robinhood Testnet explorer block numbers listed below.
+
 ## Terms (frozen Phase 0 tier)
 
 | Term | Value |
@@ -122,6 +126,29 @@ Final reconciliation (base units): pool balance `968000000` = `totalAssets 96704
 Final epoch 2 state: `Settled`; `soldNotional 1000000000`, `soldLiability 50000000`, `premiumCollected 8000000`,
 close/open evidence hashes `0x4c8c45d3…a4c6` / `0x4a803c08…dc8a`. Policy 1: `claimed = true`; the receipt is still owned
 by the buyer (it's non-transferable). Deployer USDG went 100 → 92 → 132 (−8 premium, +40 payout).
+
+## Source verification
+
+Blockscout source verification was attempted, and it returned `Fail - Unable to verify`. The explorer's supported
+compilers stop at solc 0.8.36, and these contracts use 0.8.37. Instead, the deployed bytecode was compared with a local
+build of this repository (contract sources unchanged since commit `af755c9`):
+
+| Contract | Result |
+|---|---|
+| SnapshotOracle | Runtime bytecode identical, byte for byte |
+| ProtectionPool | Identical except its 384 bytes of immutables, which hold the expected values: USDG address, receipt address, utilization cap `5000` and USDG decimals `6` |
+| ProtectionReceipt | Identical except its 64 bytes of immutables, which hold the pool address |
+
+To check this yourself:
+
+```sh
+forge build
+cast code 0xA288DC9B900DA2a6Df20A129C3539473fcAF5ac6 --rpc-url https://rpc.testnet.chain.robinhood.com
+forge inspect contracts/oracles/SnapshotOracle.sol:SnapshotOracle deployedBytecode   # identical output
+```
+
+For the pool and the receipt, mask the ranges listed in `deployedBytecode.immutableReferences` in
+`out/<Contract>.sol/<Contract>.json` before comparing.
 
 ## Reproduce
 
