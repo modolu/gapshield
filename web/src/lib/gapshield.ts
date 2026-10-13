@@ -2,6 +2,7 @@ import { createPublicClient, defineChain, formatUnits, http, parseUnits } from "
 
 export const CHAIN_ID = 46630;
 export const RPC_URL = "https://rpc.testnet.chain.robinhood.com";
+const READ_RPC_URL = "/api/rpc";
 export const EXPLORER = "https://explorer.testnet.chain.robinhood.com";
 export const POOL = "0xA1De944d3d1247747a020AB7C325431D9221B13d" as const;
 export const RECEIPT = "0x19573Ed5eee1D348626679737844E769527C1c46" as const;
@@ -16,7 +17,7 @@ export const robinhoodTestnet = defineChain({
   testnet: true,
 });
 
-export const publicClient = createPublicClient({ chain: robinhoodTestnet, transport: http(RPC_URL) });
+export const publicClient = createPublicClient({ chain: robinhoodTestnet, transport: http(READ_RPC_URL) });
 
 export const poolAbi = [
   { type: "function", name: "activeEpochId", stateMutability: "view", inputs: [], outputs: [{ type: "uint256" }] },
