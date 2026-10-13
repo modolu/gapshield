@@ -13,8 +13,9 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "GapShield",
-  description: "Weekend gap protection for tokenized equities (testnet prototype).",
+  title: "GapShield — Protect the gap. Keep the exposure.",
+  description:
+    "Fixed-price, fully collateralized downside protection for tokenized equities. Live testnet prototype settled in USDG.",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
@@ -23,7 +24,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
       lang="en"
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
-      <body className="min-h-full flex flex-col">{children}</body>
+      <body className="min-h-full">{children}</body>
     </html>
   );
 }
