@@ -31,9 +31,7 @@ GapShield's current live prototype is deployed on **Robinhood Chain Testnet**, n
 
 ### Project website
 
-**TBD — add the final public production/demo URL before submission.**
-
-Do not use a placeholder URL in the final form.
+https://web-nu-three-12.vercel.app
 
 ### What are you building, and who is it for?
 
@@ -365,15 +363,15 @@ If the repository becomes private before submission, invite `hackathon@colosseum
 
 ### Live product URL
 
-**TBD — add the final public product/demo URL.**
+https://web-nu-three-12.vercel.app
 
 ### Access instructions
 
-No funds are required to review the existing prototype evidence. Judges can inspect the deployed Robinhood Chain Testnet contracts, transaction history, policy lifecycle and accounting evidence directly through the repository and explorer links.
+The public Vercel site is a lightweight product landing page for the current testnet prototype. No wallet connection or funding is required to review it.
+
+For the complete working proof, judges should use the repository and explorer links to inspect the deployed Robinhood Chain Testnet contracts, transaction history, policy lifecycle, settlement and accounting evidence.
 
 The current settlement implementation uses `SnapshotOracle`, an explicitly labelled **TESTNET DEMO ORACLE** operated by a trusted account. It is not presented as a production market-data oracle.
-
-If a live frontend is added before submission, replace this section with exact instructions for the judge's primary flow.
 
 ---
 
@@ -502,7 +500,7 @@ Strong GapShield answers:
 ## 20. Final pre-submit checklist
 
 - [ ] Project name is GapShield everywhere.
-- [ ] Final website/live product URL added.
+- [x] Final website/live product URL added: https://web-nu-three-12.vercel.app
 - [ ] GitHub repository is accessible to judges.
 - [ ] If private, `hackathon@colosseum.com` has access.
 - [ ] Project graphic/logo uploaded.
