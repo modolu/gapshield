@@ -1,141 +1,535 @@
-# GapShield — Arbitrum Open House Singapore Submission
+# GapShield — Colosseum Crypto World's Fair Submission
 
 **Protect the gap. Keep the exposure.**
 
-GitHub: https://github.com/modolu/gapshield · Live proof: [`docs/TESTNET_DEMO_EVIDENCE.md`](docs/TESTNET_DEMO_EVIDENCE.md) ·
-Network: Robinhood Chain Testnet (46630) · Asset: Paxos USDG
+> Submission working document. Keep every claim aligned with the current repository and deployed prototype.
 
-## Overview
+GitHub: https://github.com/modolu/gapshield
+Current deployed network: Robinhood Chain Testnet (46630)
+Collateral / settlement asset: Paxos USDG
+Live testnet evidence: [`docs/TESTNET_DEMO_EVIDENCE.md`](docs/TESTNET_DEMO_EVIDENCE.md)
 
-GapShield sells fixed-price, fully collateralized protection against one specific risk: a tokenized stock opening
-Monday far below Friday's close. A holder pays a known USDG premium before Friday's cutoff. If the Monday open is more
-than 5% below Friday's close, the contract pays the excess, capped at 5% of notional, from a USDG underwriting pool.
-There are no Greeks, no margin and no claim forms. The full lifecycle runs on Robinhood Chain Testnet today.
+## Important eligibility note
 
-## Problem
+GapShield's current live prototype is deployed on **Robinhood Chain Testnet**, not Solana. Do not select Solana or describe GapShield as Solana-integrated unless a real Solana integration is completed before submission. This document preserves the project's actual current state so the submission does not overclaim.
 
-Tokenized US stocks are on-chain around the clock, but the underlying market closes from Friday 4:00 PM ET until the next
-session. Weekend news turns into a Monday gap, and stop-losses can't fill through it. Holders can hope, sell on Friday
-and give up the upside, trade thin weekend liquidity, or learn a full options interface for one recurring event.
+---
 
-## Solution
+## 1. Project details
 
-One event, one price, one decision: "pays the gap beyond 5%, capped at 5%." The buyer knows the premium and maximum
-payout before signing. Underwriters know their maximum liability before depositing. Settlement is deterministic from
-two reference prices, and the receipt owner claims on-chain.
+### Project name
 
-## Why tokenized equities need this
+**GapShield**
 
-The token can trade on Saturday, but the reference market can't. That mismatch is structural and repeats every weekend
-and holiday. Adjacent projects address it from other sides: LP fee protection, risk analytics, lending freezes and
-general options. GapShield protects the **holder's** close-to-open downside directly, as a simple add-on.
+### Tagline
 
-## How it works
+**Protect the gap. Keep the exposure.**
 
-1. LPs deposit USDG into an ERC-4626 pool.
-2. The owner opens a weekly epoch with explicit UTC times for the sale cutoff, close window, open window and settlement
-   deadline. There's no on-chain market calendar.
-3. A buyer purchases a whole-USDG notional before the cutoff. The pool escrows the premium, reserves the worst-case
-   payout, and mints a non-transferable receipt.
-4. The operator records the close and open references through the epoch's oracle adapter. The pool re-checks the
-   window, rejects future-dated references and requires a positive price.
-5. Settlement moves owed payouts out of LP assets into a claimable bucket, releases the reserve, and splits the premium
-   88% to LPs and 12% to the protocol.
-6. The buyer claims. With no settlement by the deadline, anyone can void the epoch and buyers get a full premium refund.
+### One-line description
 
-## Technical architecture
+**Fixed-price, fully collateralized downside protection for tokenized equities.**
 
-- Solidity 0.8.37, Foundry, OpenZeppelin 5.7. No proxies, no loops over policies or LPs.
-- `ProtectionPool` (ERC-4626 vault and settlement state machine), `ProtectionReceipt` (non-transferable ERC-721,
-  ERC-5192 `locked`), `PremiumMath`/`PayoutMath` (pure integer math).
-- `IReferenceOracle` is a stateless adapter interface. `SnapshotOracle` is the testnet adapter. A Pyth Pro adapter
-  (per-feed `feedUpdateTimestamp` and `marketSession`) can be added without changing pool storage.
-- Epoch states: Open → CloseRecorded → Settled, or Open/CloseRecorded → Voided at or after the deadline.
+### Project website
 
-## Why Robinhood Chain and the Arbitrum ecosystem
+**TBD — add the final public production/demo URL before submission.**
 
-Robinhood Chain is an Arbitrum chain built for financial products and tokenized equities, which is exactly the asset
-class GapShield protects. Standard Solidity tooling deployed unchanged. USDG and Pyth Pro are both present on Robinhood
-Chain and Arbitrum, and the contracts are chain-agnostic within the Arbitrum ecosystem.
+Do not use a placeholder URL in the final form.
 
-## USDG integration
+### What are you building, and who is it for?
 
-USDG is the only asset in the system: LP collateral, premiums, payouts, refunds and protocol fees. The deployment uses
-the official Paxos Robinhood Testnet USDG (`0x7E955252E15c84f5768B83c41a71F9eba181802F`). The deploy script checks it
-has code, 6 decimals and the USDG symbol, and refuses to deploy otherwise.
+GapShield is an on-chain risk protection protocol for holders of tokenized equities. It helps investors protect against sharp downside gaps that can occur while the underlying stock market is closed, without requiring them to sell their position or use a complex options product.
 
-## Demo oracle disclaimer
+Users purchase protection for a defined notional amount by paying a fixed USDG premium before a cutoff. Liquidity providers deposit USDG into a fully collateralized underwriting pool, and the protocol reserves the maximum possible liability as soon as protection is sold. When the protection window ends, reference prices are used to determine whether the predefined downside event occurred and, if triggered, the policy holder can claim the resulting USDG payout.
 
-Testnet settlement uses **`SnapshotOracle`, a TESTNET DEMO ORACLE**. A single trusted operator posts the prices, and the
-contract reports `ORACLE_KIND() == "TESTNET DEMO ORACLE"` on-chain. It is not production-safe, not decentralized, and
-not a market data source.
+The current prototype focuses on one narrow event: the Friday-close to Monday-open downside gap in tokenized US equities. The first implementation protects downside beyond a 5% gap, capped at an additional 5%.
 
-## Live deployed contracts (Robinhood Chain Testnet, 46630)
+GapShield is initially built for tokenized-equity holders who want to remain invested through weekends while limiting discontinuous downside risk, and for stablecoin holders seeking transparent, bounded underwriting opportunities.
+
+### Why did you decide to build this, and why build it now?
+
+I decided to build GapShield because tokenizing equities changes how they can be held and transferred, but it does not remove the risks created by the underlying market structure.
+
+A tokenized stock may remain transferable on-chain while the US equity market is closed. If meaningful news breaks during that period, the underlying stock can reopen substantially below its previous close. A traditional stop-loss cannot guarantee protection through a price gap, while the alternatives — exiting the position, relying on thin off-hours liquidity, or using conventional options — introduce additional complexity.
+
+The timing matters because tokenized real-world assets are becoming increasingly usable on-chain, stablecoins provide practical settlement and collateral infrastructure, and smart contracts allow narrowly defined risks to be priced and fully collateralized.
+
+That creates an opportunity for a new category of simple parametric risk products designed specifically for tokenized assets. GapShield starts with weekend downside gaps, but the broader thesis includes earnings events, market holidays and other objective event-driven risks.
+
+### What technologies are you using or integrating with?
+
+- Solidity 0.8.37
+- Foundry
+- OpenZeppelin 5.7
+- ERC-4626 underwriting vault architecture
+- ERC-721 non-transferable protection receipts
+- Paxos USDG
+- Robinhood Chain Testnet
+- SnapshotOracle testnet adapter
+- GitHub Actions CI
+- Integer-only premium and payout math
+
+Current production-safe oracle integration is **not complete**. `SnapshotOracle` is explicitly a **TESTNET DEMO ORACLE**.
+
+### Which chains does your product use?
+
+**Robinhood Chain Testnet only, in the current deployed prototype.**
+
+Do not select Solana unless a real Solana deployment or integration is completed before final submission.
+
+### How does your product use the chain?
+
+GapShield uses Robinhood Chain Testnet for protection issuance, collateral custody, premium collection, liability reservation, deterministic settlement and USDG payout claims.
+
+Liquidity providers deposit USDG into an on-chain protection pool. Buyers purchase protection through smart contracts, receive a non-transferable policy receipt, and can claim any resulting payout directly on-chain after settlement.
+
+The blockchain provides transparent collateralization and verifiable accounting, while GapShield supplies the risk definition, policy lifecycle and settlement logic above it.
+
+### Category
+
+**Real World Assets (RWA)**
+
+Secondary category if the form allows more than one: **DeFi**.
+
+### Is your project a mobile-focused dApp?
+
+**No.**
+
+---
+
+## 2. Current product wedge
+
+The current product expresses one simple protection rule:
+
+> **Pays the downside gap beyond 5%, capped at a further 5%.**
+
+Prototype economics:
+
+| Term | Value |
+|---|---|
+| Trigger | 5% downside gap |
+| Maximum additional cover | 5% |
+| Premium | 0.80% of protected notional |
+| Premium split | 88% LP / 12% protocol |
+| Policy size | 10–10,000 USDG |
+| Utilization cap | 50% |
+| Example | 1,000 USDG notional → 8 USDG premium → 50 USDG maximum payout |
+
+These parameters are prototype terms, not actuarially validated production pricing.
+
+---
+
+## 3. How GapShield works
+
+1. Liquidity providers deposit USDG into the ERC-4626 protection pool.
+2. An epoch is opened with explicit sale, reference-price and settlement windows.
+3. A buyer purchases protection before the cutoff and pays a fixed premium.
+4. The pool reserves the maximum possible payout immediately.
+5. Close and open reference prices are submitted through the epoch's oracle adapter.
+6. Settlement deterministically calculates the covered gap and moves any payout into a claimable bucket.
+7. The policy owner claims the payout in USDG.
+8. If valid settlement never arrives before the deadline, anyone can void the epoch and buyers can reclaim their premium.
+
+---
+
+## 4. Live prototype proof
+
+GapShield is deployed on Robinhood Chain Testnet using official Paxos USDG.
+
+A complete on-chain lifecycle has been executed:
+
+- LP deposit: **1,000 USDG**
+- Protected notional: **1,000 USDG**
+- Premium: **8 USDG**
+- Maximum reserved payout: **50 USDG**
+- Reference close: **100.00**
+- Reference open: **91.00**
+- Raw gap: **9%**
+- Covered gap: **4%**
+- Buyer payout: **40 USDG**
+- Protocol fee: **0.96 USDG**
+- LP premium allocation: **7.04 USDG**
+- Final LP assets: **967.04 USDG**
+- Claimable payouts after claim: **0 USDG**
+- Reserved liability after settlement: **0 USDG**
+- Pending premium after settlement: **0 USDG**
+
+The final pool balance of **968 USDG** reconciles exactly as:
+
+**967.04 USDG LP assets + 0.96 USDG protocol fees.**
+
+Full transaction hashes and block numbers are recorded in [`docs/TESTNET_DEMO_EVIDENCE.md`](docs/TESTNET_DEMO_EVIDENCE.md).
+
+### Deployed contracts
 
 | Contract | Address |
 |---|---|
 | ProtectionPool | `0xA1De944d3d1247747a020AB7C325431D9221B13d` |
 | ProtectionReceipt | `0x19573Ed5eee1D348626679737844E769527C1c46` |
-| SnapshotOracle (TESTNET DEMO ORACLE) | `0xA288DC9B900DA2a6Df20A129C3539473fcAF5ac6` |
-| USDG (official Paxos) | `0x7E955252E15c84f5768B83c41a71F9eba181802F` |
+| SnapshotOracle | `0xA288DC9B900DA2a6Df20A129C3539473fcAF5ac6` |
+| Paxos USDG | `0x7E955252E15c84f5768B83c41a71F9eba181802F` |
 
-## Live demo proof
+---
 
-All transactions are listed, with block numbers, in [`docs/TESTNET_DEMO_EVIDENCE.md`](docs/TESTNET_DEMO_EVIDENCE.md).
+## 5. Technical architecture
 
-- **Epoch 1, void path:** no settlement arrived, so after its deadline `voidEpoch(1)` moved it to `Voided`.
-- **Epoch 2, policy 1:**
-  - bought 1,000 USDG of cover for an 8 USDG premium;
-  - settled with close 100.00 and open 91.00, a 9% gap of which 4% was covered;
-  - **claimed 40 USDG**.
-- **Final pool state:** LP assets 967.04 USDG, protocol fees 0.96 USDG, claimable payouts 0, reserve 0, escrow 0.
-  The pool balance (968 USDG) reconciles exactly.
+- `ProtectionPool`: ERC-4626 vault plus policy, reserve, settlement and claim state machine.
+- `ProtectionReceipt`: non-transferable ERC-721 policy receipt with ERC-5192-style locked behavior.
+- `PremiumMath` / `PayoutMath`: deterministic integer-only calculations.
+- `IReferenceOracle`: oracle abstraction used by the pool.
+- `SnapshotOracle`: trusted testnet-only adapter used for the live prototype.
+- Separate accounting for LP assets, reserved liability, pending premium, claimable payouts and protocol fees.
+- No proxy architecture.
+- No loops over policies or LPs in the core lifecycle.
+- Permissionless void path after the settlement deadline.
 
-## Core economics (prototype tier)
+### Testing
 
-| Term | Value |
-|---|---|
-| Trigger | 5% |
-| Max cover | 5% |
-| Premium | 0.80% of notional |
-| Split | 88% LP / 12% protocol |
-| Notional per policy | 10 – 10,000 USDG |
-| Utilization cap | 50% |
-| Example | 1,000 USDG: premium 8, max payout 50 |
+- **208 Foundry tests passing** in the validated repository state.
+- CI includes fuzz testing and a stateful invariant suite.
+- The invariant suite checks 15 properties over 256 randomized sequences of 128 calls, totalling 32,768 calls in the recorded run.
 
-These are illustrative prototype parameters, not actuarial pricing.
+The contracts are **unaudited**.
 
-## Key differentiators
+---
 
-- Protects the holder, not LPs or lenders. It's a single-purpose product, not an options market.
-- Known premium and known maximum payout. Settlement is deterministic and claims are on-chain.
-- Fully collateralized, with explicit, separate accounting buckets an underwriter can inspect.
-- Oracle-agnostic interface with a deterministic, permissionless fallback when the oracle fails.
+## 6. Oracle disclosure
 
-## Security and solvency model
+The current live testnet demo uses **`SnapshotOracle`**, which identifies itself as a **TESTNET DEMO ORACLE**.
 
-- Worst-case liability is reserved at purchase, and capacity counts LP-owned assets only.
-- Escrowed premium, settled claimable payouts and protocol fees are never LP capital or free collateral.
-- Settlement and void windows are disjoint, and there's no admin void.
-- Pause blocks new risk only. It never blocks settlement, claims, refunds or free withdrawals.
-- **Testing:** 208 Foundry tests, run with 10,000 fuzz runs in CI. They include a stateful invariant suite that checks
-  15 properties over 256 randomized sequences of 128 calls (32,768 calls total).
-- **Unaudited.**
+A trusted operator posts the reference prices. It is not decentralized, not a production market-data source and not presented as production-safe.
 
-## Current limitations
+The core pool is oracle-agnostic through `IReferenceOracle`, so a future production adapter can replace the demo oracle without redesigning the core protection state machine.
 
-- Trusted demo oracle; operator-gated settlement.
-- One asset (TSLA), one tier, one active epoch.
-- Fixed prototype pricing.
-- No frontend yet.
-- Contracts not source-verified on Blockscout: the explorer lacks solc 0.8.37. The bytecode match is documented
-  instead.
-- Testnet only. No users beyond the team.
+---
 
-## Roadmap
+## 7. Business model
 
-1. Pyth Pro adapter with per-feed freshness and market-session checks, then permissionless settlement.
-2. Mobile buyer and underwriter app (quote, payout scrubber, solvency bar, claim).
-3. Multiple equities and tiers, historically calibrated pricing, holiday and earnings events.
-4. Audit, multisig and timelock administration, and a compliant distribution path before any mainnet use.
-5. Embedded B2B distribution through wallets, tokenized-stock venues and lending markets.
+The prototype allocates **12% of collected premium** to protocol fees and **88%** to LP economics after successful settlement.
+
+The longer-term distribution thesis is embedded protection rather than requiring every user to discover a standalone insurance marketplace. Potential distribution surfaces include:
+
+- tokenized-equity wallets
+- tokenized-stock trading venues
+- structured-product interfaces
+- lending and collateral platforms
+
+This is an early business-model hypothesis. GapShield has **no production revenue today**.
+
+---
+
+## 8. Target users
+
+### Primary
+
+Holders of tokenized US equities who want to remain exposed through weekends while limiting severe close-to-open downside risk.
+
+### Secondary
+
+Stablecoin holders willing to underwrite explicitly capped event risk in exchange for premium income.
+
+### Longer-term distribution users
+
+- wallets
+- tokenized-equity venues
+- lending protocols
+- structured-product platforms
+
+---
+
+## 9. Why this can become larger than the first wedge
+
+GapShield is not trying to recreate a full options exchange.
+
+The thesis is narrower: as real-world assets move on-chain, users will need simple protection products that match the risks of those assets without forcing them into traditional derivatives complexity.
+
+Weekend gaps are the first wedge because the event is bounded, objectively measurable and easy to explain. The same architecture can later support other event-defined risks such as:
+
+- earnings gaps
+- holiday gaps
+- scheduled event risk
+- other bounded downside events in tokenized real-world assets
+
+The long-term opportunity is a **parametric risk layer for tokenized assets**.
+
+---
+
+## 10. Notes for judges
+
+### Did anyone not listed on the team do meaningful work?
+
+**No.** GapShield was built and developed independently by the listed founder. External developer tools, AI-assisted development tools and third-party infrastructure were used during development, but no unlisted person acted as a project team member or independently performed meaningful project work.
+
+### Pre-existing work disclosure
+
+GapShield existed before this Colosseum submission effort and is **not being represented as a project created entirely from scratch during Colosseum**.
+
+The current repository was initialized on **October 1, 2026**, and the live Robinhood Chain Testnet prototype, USDG integration, settlement/claim lifecycle and original submission documentation were completed before this Colosseum-specific submission preparation.
+
+For transparency, the last repository state before Colosseum-specific submission work is:
+
+- **Commit:** `8b262b7`
+- **Date:** 2026-10-03
+- **Commit message:** `docs: mark submission checks complete`
+
+Colosseum-period submission work should be described only as the actual work completed after that baseline, including any genuine product changes, new integrations, reliability work, UX work, additional validation, deployment changes, positioning or documentation completed during the competition period.
+
+Do not imply that pre-existing contracts, tests or deployments were created during Colosseum if they were not.
+
+---
+
+## 11. Important context about the repository
+
+This repository contains the complete current GapShield prototype, including:
+
+- core protection contracts
+- protection receipt contract
+- oracle interface and testnet oracle
+- deployment tooling
+- automated tests
+- Robinhood Chain Testnet deployment manifest
+- live transaction evidence
+- product architecture and product brief
+- deployment documentation
+
+Judges should primarily review:
+
+1. `README.md`
+2. `contracts/`
+3. `test/`
+4. `docs/TESTNET_DEMO_EVIDENCE.md`
+5. `docs/DEPLOYMENT.md`
+6. `deployments/46630.json`
+
+Pre-Colosseum baseline: **`8b262b7`**.
+
+---
+
+## 12. GitHub link
+
+https://github.com/modolu/gapshield
+
+If the repository becomes private before submission, invite `hackathon@colosseum.com` and verify access before submitting.
+
+---
+
+## 13. Demo video
+
+### Recommended length
+
+**1:30–2:00**
+
+### Recommended sequence
+
+1. GapShield opening card.
+2. Explain the weekend-gap problem.
+3. Show the protection rule and product mechanics.
+4. Show the live deployment.
+5. Show the 1,000 USDG LP deposit.
+6. Show the 1,000 USDG protection purchase and 8 USDG premium.
+7. Show the 100 → 91 settlement and 40 USDG calculated payout.
+8. Show the 40 USDG on-chain claim.
+9. Show the reconciled final accounting.
+10. End on: **Protect the gap. Keep the exposure.**
+
+### Demo voiceover
+
+> Tokenized equities can remain transferable on-chain while the market that prices the underlying stock is closed. If bad news lands during that period, the stock can reopen far below its previous close, and a stop-loss cannot protect an investor through that gap.
+>
+> GapShield provides fixed-price, fully collateralized protection for that specific risk.
+>
+> Liquidity providers deposit USDG into a protection pool. A holder chooses how much exposure to protect and pays a known premium before the cutoff. The protocol immediately reserves the maximum possible payout.
+>
+> In this live testnet example, an underwriter deposited one thousand USDG. A buyer then protected one thousand USDG of TSLA exposure for an eight USDG premium, with fifty USDG reserved as the maximum payout.
+>
+> The reference price moved from one hundred dollars to ninety-one dollars — a nine percent gap. Protection starts beyond five percent, so four percent was covered, producing a forty USDG payout.
+>
+> The buyer then claimed exactly forty USDG on-chain.
+>
+> After the claim, the accounting reconciled exactly: nine hundred and sixty-seven point zero four USDG belonged to LPs, ninety-six cents was accrued as the protocol fee, and nothing remained claimable, reserved or escrowed.
+>
+> The current prototype uses an explicitly labelled testnet demo oracle, not a production price feed.
+>
+> GapShield turns a difficult market discontinuity into simple, bounded protection: protect the gap, keep the exposure.
+
+### Show demo video on public project page
+
+**Yes.**
+
+### Demo video URL
+
+**TBD — add final YouTube/Loom/Vimeo URL.**
+
+---
+
+## 14. Live product link and access instructions
+
+### Live product URL
+
+**TBD — add the final public product/demo URL.**
+
+### Access instructions
+
+No funds are required to review the existing prototype evidence. Judges can inspect the deployed Robinhood Chain Testnet contracts, transaction history, policy lifecycle and accounting evidence directly through the repository and explorer links.
+
+The current settlement implementation uses `SnapshotOracle`, an explicitly labelled **TESTNET DEMO ORACLE** operated by a trusted account. It is not presented as a production market-data oracle.
+
+If a live frontend is added before submission, replace this section with exact instructions for the judge's primary flow.
+
+---
+
+## 15. Pitch video
+
+### Recommended length
+
+**60–90 seconds**
+
+### Pitch script
+
+> Hi, I'm **[FOUNDER NAME]**, and I'm building GapShield.
+>
+> GapShield is fixed-price, fully collateralized downside protection for tokenized equities.
+>
+> Tokenized stocks can remain transferable around the clock, but the markets that price the underlying equities still close. If meaningful news breaks while that market is shut, the stock can reopen far below its previous close, and a stop-loss cannot protect an investor through that gap.
+>
+> GapShield lets a holder pay a known stablecoin premium to protect a defined amount of exposure. Underwriters provide USDG liquidity, and the protocol fully reserves the maximum liability before protection is issued.
+>
+> Our first wedge is the Friday-close to Monday-open downside gap. We've already deployed the protocol on testnet and completed a full on-chain lifecycle from liquidity deposit and policy purchase through settlement and payout.
+>
+> The bigger opportunity is a parametric risk layer for tokenized real-world assets — covering weekend gaps, earnings, holidays and other bounded event-driven risks.
+>
+> I'm building GapShield because I believe bringing assets on-chain also requires bringing their risk-management infrastructure on-chain.
+>
+> That's GapShield: protect the gap, keep the exposure.
+
+### Pitch video URL
+
+**TBD.**
+
+---
+
+## 16. Founder profile fields
+
+Fill these with the identity of the founder/account actually making this submission. Do not reuse another person's details or imply another person built the project.
+
+- Full name: **TBD**
+- Role: **Founder & Builder**
+- Age: **TBD**
+- Gender: **TBD**
+- Country: **TBD**
+- City: **TBD**
+- Currently in school?: **TBD**
+- Telegram: **TBD**
+- X: **TBD**
+- LinkedIn: **TBD**
+- GitHub profile: **TBD**
+- Other relevant link: **TBD**
+
+### Educational background — draft structure
+
+> I have a background in **[education]**, which trained me in evidence-based problem solving and structured analysis. Alongside this, I've developed experience in software development, data analysis, product design and digital products through independent projects and hackathons.
+
+Only keep skills that are true for the submitting founder.
+
+### Where have you worked or built before? — draft structure
+
+> I currently work in **[role/domain]** while independently building software products. I've built projects across **[relevant areas]**, often handling product research, implementation, testing, deployment and presentation end to end. My experience in **[relevant domain]** is directly useful to GapShield because **[founder-market-fit explanation]**.
+
+---
+
+## 17. Final survey guidance
+
+Answer all survey questions truthfully.
+
+### What most motivated you to enter?
+
+Recommended only if accurate:
+
+- Build or launch a product
+- Colosseum investment
+- Feedback and exposure
+
+### Groups that supported you
+
+Select only groups that genuinely supported the project. Leave blank if none.
+
+### Previous ecosystem experience
+
+Do not claim prior Solana shipping experience based on GapShield unless GapShield actually gains a Solana integration. Answer based on the submitting founder's real experience.
+
+### Likelihood of continuing the project
+
+**Very likely / Yes**, if that remains the plan.
+
+### What would help you take the next step?
+
+Strong GapShield answers:
+
+- Users and distribution
+- Feedback and mentorship
+- Fundraising
+
+---
+
+## 18. Current limitations
+
+- Robinhood Chain Testnet only in the current deployed version.
+- No Solana integration yet.
+- Trusted demo oracle.
+- Operator-gated settlement.
+- One asset (TSLA).
+- One prototype pricing tier.
+- One active epoch.
+- No production frontend yet.
+- Contracts are unaudited.
+- No production users or revenue.
+- Blockscout source verification is unavailable for the deployed compiler version; bytecode matching is documented instead.
+
+---
+
+## 19. Roadmap
+
+1. Add a production-grade reference-price adapter with freshness and market-session validation.
+2. Add a buyer/underwriter interface for quotes, coverage, solvency and claims.
+3. Expand to multiple tokenized equities and protection tiers.
+4. Calibrate pricing using historical event and gap data.
+5. Add holiday and earnings protection products.
+6. Audit the contracts and strengthen administration with multisig/timelock controls before production use.
+7. Pursue embedded distribution through wallets, tokenized-equity venues and other RWA platforms.
+8. If targeting a Solana-native competition, build and validate a genuine Solana deployment/integration before claiming Solana support.
+
+---
+
+## 20. Final pre-submit checklist
+
+- [ ] Project name is GapShield everywhere.
+- [ ] Final website/live product URL added.
+- [ ] GitHub repository is accessible to judges.
+- [ ] If private, `hackathon@colosseum.com` has access.
+- [ ] Project graphic/logo uploaded.
+- [ ] Demo video is public or unlisted and playable.
+- [ ] Demo video is within the form's time limit.
+- [ ] Pitch video is public or unlisted and playable.
+- [ ] Pitch video is within the form's time limit.
+- [ ] Founder identity fields match the actual submitting founder.
+- [ ] Telegram, X, LinkedIn and GitHub links are correct.
+- [ ] Chain selection matches actual integrations.
+- [ ] No Solana integration is claimed unless one exists.
+- [ ] Category is RWA, with DeFi as secondary if allowed.
+- [ ] Pre-existing work is disclosed.
+- [ ] Pre-Colosseum baseline commit `8b262b7` is preserved.
+- [ ] Access instructions match the actual live product.
+- [ ] No claim exceeds what the repository or deployment proves.
+- [ ] README is current.
+- [ ] Main branch is clean.
+- [ ] Tests pass.
+- [ ] Final submission preview checked before clicking Submit.
+
+---
+
+## 21. Final positioning
+
+GapShield is not trying to recreate an options exchange.
+
+It starts with a narrow, recurring market discontinuity that is easy to explain and objectively settle. The larger thesis is that tokenized real-world assets will need native risk-management infrastructure alongside trading, custody and settlement.
+
+**GapShield: Protect the gap. Keep the exposure.**
